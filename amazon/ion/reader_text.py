@@ -273,6 +273,27 @@ _TIMESTAMP_OFFSET_INDICATORS = (
 
 
 @coroutine
+def timestamp_zero_start_handler(c, ctx):
+    assert len(ctx.value) == 1
+    assert ctx.value[0] == ord('0')
+    ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
+    val = ctx.value
+    if val[0] == ord('-'):
+        raise IonException('Negative not allowed in timestamp')
+    val.append(c)
+    c, self = yield
+    trans = Transition(None, self)
+    while True:
+        if c == ord('-') or c == ord('T'):
+            trans = ctx.immediate_transition(timestamp_handler(c, ctx))
+        elif c in _DIGITS:
+            val.append(c)
+        else:
+            raise IonException('Illegal character %s in timestamp' % (chr(c),))
+        c, _ = yield trans
+
+
+@coroutine
 def timestamp_handler(c, ctx):
     class State(Enum):
         YEAR = 0
@@ -344,44 +365,65 @@ def timestamp_handler(c, ctx):
 
 @coroutine
 def string_handler(c, ctx):
-    raise IonException('Not yet implemented')
+    assert c == ord('"')
+    ctx = ctx.derive_ion_type(IonType.STRING)
+    val = ctx.value
+    prev = c
+    c, self = yield
+    trans = Transition(None, self)
+    done = False
+    while not done:
+        # TODO error on disallowed escape sequences
+        if c == ord('"') and prev != ord('\\'):
+            done = True
+        else:
+            # TODO should a backslash be appended?
+            val.append(c)
+        prev = c
+        c, _ = yield trans
+    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
 
 
 @coroutine
-def comment_handler(c):
+def comment_handler(c, whence):
     assert c == ord('/')
-    c = yield
+    c, self = yield
     if c == ord('/'):
         block_comment = False
     elif c == ord('*'):
         block_comment = True
     else:
         raise IonException("Illegal character sequence '/%s'" % (chr(c),))
-    in_comment = True
+    done = False
     prev = None
-    while True:
-        c = yield in_comment
+    trans = Transition(None, self)
+    while not done:
+        c, _ = yield trans
         if block_comment:
             if prev == ord('*') and c == ord('/'):
-                in_comment = False
+                done = True
             prev = c
         else:
             if c == ord('\n'):
-                in_comment = False
+                done = True
+    yield Transition(None, whence)
 
 
 @coroutine
 def triple_quote_string_handler(c, ctx):
-    # TODO comments...
+    # TODO handle the case where the stream ends on a triple-quoted string. Emit an event or not?
     assert c == ord('\'')
     ctx = ctx.derive_ion_type(IonType.STRING)
     quotes = 0
     in_data = True
     val = ctx.value
+    prev = c
     c, self = yield
-    trans = Transition(None, self)
+    here = Transition(None, self)
     while True:
-        if c == ord('\''):
+        trans = here
+        # TODO error on disallowed escape sequences
+        if c == ord('\'') and prev != ord('\\'):
             quotes += 1
             if quotes == 3:
                 in_data = not in_data
@@ -392,20 +434,19 @@ def triple_quote_string_handler(c, ctx):
                 for i in range(quotes):
                     val.append(ord('\''))
                 quotes = 0
-                val.append(c)
+                # TODO should a backslash be appended - why is Java inconsistent between double- and triple-quoted?
+                if c != ord('\\'):
+                    val.append(c)
             else:
                 if quotes > 0:
                     ctx.queue.unread(quotes + 1)  # un-read the skipped quotes AND c, which will be consumed again later
                     trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                 elif c not in _WHITESPACE:
                     if c == ord('/'):
-                        comment = comment_handler(c)
-                        in_comment = True
-                        while in_comment:
-                            c, _ = yield trans
-                            in_comment = comment.send(c)
+                        trans = ctx.immediate_transition(comment_handler(c, self))
                     else:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+        prev = c
         c, _ = yield trans
 
 
@@ -448,14 +489,18 @@ def quoted_symbol_handler(c, ctx):
     assert c != ord('\'')
     val = ctx.value
     val.append(c)
+    prev = c
     c, self = yield
     trans = Transition(None, self)
     done = False
     while not done:
-        if c == ord('\''):
+        # TODO error on disallowed escape sequences
+        if c == ord('\'') and prev != ord('\\'):
             done = True
         else:
+            # TODO should a backslash be appended?
             val.append(c)
+        prev = c
         c, _ = yield trans
     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
 
@@ -541,6 +586,16 @@ _REAL_NUMBER_TABLE = {
 }
 
 _ZERO_START_TABLE = {
+    ord('0'): timestamp_zero_start_handler,  # TODO pythonic way to crunch these in?
+    ord('1'): timestamp_zero_start_handler,
+    ord('2'): timestamp_zero_start_handler,
+    ord('3'): timestamp_zero_start_handler,
+    ord('4'): timestamp_zero_start_handler,
+    ord('5'): timestamp_zero_start_handler,
+    ord('6'): timestamp_zero_start_handler,
+    ord('7'): timestamp_zero_start_handler,
+    ord('8'): timestamp_zero_start_handler,
+    ord('9'): timestamp_zero_start_handler,
     ord('b'): binary_int_handler,
     ord('x'): hex_int_handler,
     ord('B'): binary_int_handler,
@@ -748,7 +803,7 @@ _BLOCK_COMMENT_END_SEQUENCE = [(b'*',), (b'/',)]
 _LIST_END_SEQUENCE = [(b']',)]
 _STRUCT_END_SEQUENCE = [(b'}',)]
 _NUMBER_END_SEQUENCE = [(ord('{'), ord('}'), ord('['), ord(']'), ord('('), ord(')'), ord(','), ord('\"'), ord('\''),
-                         ord(' '), ord('\t'), ord('\n'), ord('\r'))]
+                         ord(' '), ord('\t'), ord('\n'), ord('\r'), ord('/'))]  # TODO added '/' for comments -- sexps?
 
 
 @coroutine
@@ -758,9 +813,13 @@ def _container_handler(ctx):
     c = None
     while True:
         if c is not None and c not in _WHITESPACE:
-            # This is the start of a new child value.
-            child_context = ctx.derive_child_context(None, None, self, bytearray(), None)
-            handler = get(_START_TABLE, c)(c, child_context)  # Initialize the new handler
+            # TODO determine how to get this to work in sexps...
+            if c == ord('/'):
+                handler = comment_handler(c, self)
+            else:
+                # This is the start of a new child value.
+                child_context = ctx.derive_child_context(None, None, self, bytearray(), None)
+                handler = get(_START_TABLE, c)(c, child_context)  # Initialize the new handler
             while len(queue) > 0:
                 c = queue.read_byte()
                 trans = handler.send((c, handler))
@@ -772,9 +831,17 @@ def _container_handler(ctx):
                     yield trans
                     break
                 else:
+                    if self is trans.delegate:
+                        # This happens at the end of a comment within this container. Read the next character and
+                        # continue.
+                        c = queue.read_byte()
+                        break
                     # This is either the same handler, or an immediate transition to a new handler if
                     # the type has been narrowed down. In either case, the next character must be read.
                     handler = trans.delegate
+            if len(queue) == 0:
+                # TODO yield incomplete from read data handler?
+                c = None
         elif len(queue) > 0:
             c = queue.read_byte()
         else:
