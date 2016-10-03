@@ -366,7 +366,9 @@ def timestamp_handler(c, ctx):
 @coroutine
 def string_handler(c, ctx):
     assert c == ord('"')
-    ctx = ctx.derive_ion_type(IonType.STRING)
+    is_clob = ctx.ion_type is IonType.CLOB
+    if not is_clob:
+        ctx = ctx.derive_ion_type(IonType.STRING)
     val = ctx.value
     prev = c
     c, self = yield
@@ -381,7 +383,10 @@ def string_handler(c, ctx):
             val.append(c)
         prev = c
         c, _ = yield trans
-    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+    if not is_clob:
+        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+    else:
+        yield ctx.immediate_transition(clob_handler(c, ctx))
 
 
 @coroutine
@@ -413,7 +418,9 @@ def comment_handler(c, whence):
 def triple_quote_string_handler(c, ctx):
     # TODO handle the case where the stream ends on a triple-quoted string. Emit an event or not?
     assert c == ord('\'')
-    ctx = ctx.derive_ion_type(IonType.STRING)
+    is_clob = ctx.ion_type is IonType.CLOB
+    if not is_clob:
+        ctx = ctx.derive_ion_type(IonType.STRING)
     quotes = 0
     in_data = True
     val = ctx.value
@@ -440,12 +447,18 @@ def triple_quote_string_handler(c, ctx):
             else:
                 if quotes > 0:
                     ctx.queue.unread(quotes + 1)  # un-read the skipped quotes AND c, which will be consumed again later
-                    trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                    if not is_clob:
+                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                    else:
+                        trans = ctx.immediate_transition(clob_handler(c, ctx))
                 elif c not in _WHITESPACE:
                     if c == ord('/'):
                         trans = ctx.immediate_transition(comment_handler(c, self))
                     else:
-                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                        if not is_clob:
+                            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                        else:
+                            trans = ctx.immediate_transition(clob_handler(c, ctx))
         prev = c
         c, _ = yield trans
 
@@ -518,7 +531,76 @@ def struct_or_lob_handler(c, ctx):
 
 @coroutine
 def lob_handler(c, ctx):
-    raise IonException('Not yet implemented')
+    assert c == ord('{')
+    c, self = yield
+    trans = Transition(None, self)
+    quotes = 0
+    while True:
+        if c in _WHITESPACE:
+            if quotes > 0:
+                raise IonException("Illegal character ' in blob")
+        elif c == ord('"'):
+            if quotes > 0:
+                raise IonException("Illegal character in clob")  # TODO
+            ctx = ctx.derive_ion_type(IonType.CLOB)
+            yield ctx.immediate_transition(string_handler(c, ctx))
+        elif c == ord('\''):
+            if not quotes:
+                ctx = ctx.derive_ion_type(IonType.CLOB)
+            quotes += 1
+            if quotes == 3:
+                yield ctx.immediate_transition(triple_quote_string_handler(c, ctx))
+        else:
+            yield ctx.immediate_transition(blob_handler(c, ctx))
+        c, _ = yield trans
+
+
+@coroutine
+def blob_handler(c, ctx):
+    # Note: all validation of base 64 characters will be left to the base64 library in the parsing phase. It could
+    # be partly done here in the lexer by checking each character against the base64 alphabet and making sure the blob
+    # ends with the correct number of '=', but this is simpler.
+    val = ctx.value
+    if c != ord('}') and c not in _WHITESPACE:
+        val.append(c)
+    prev = c
+    c, self = yield
+    trans = Transition(None, self)
+    done = False
+    while not done:
+        if c in _WHITESPACE:
+            if prev == ord('}'):
+                raise IonException("Illegal character in blob; expected }")  # TODO
+        else:
+            if c != ord('}'):
+                val.append(c)
+            elif prev == ord('}'):
+                done = True
+        prev = c
+        c, _ = yield trans
+    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BLOB, val)
+
+
+@coroutine
+def clob_handler(c, ctx):
+    if c != ord('}') and c not in _WHITESPACE:
+        raise IonException("Illegal character in clob")  # TODO
+    prev = c
+    c, self = yield
+    trans = Transition(None, self)
+    done = False
+    while not done:
+        if c in _WHITESPACE:
+            if prev == ord('}'):
+                raise IonException("Illegal character in blob; expected }")  # TODO
+        elif c == ord('}'):
+            if prev == ord('}'):
+                done = True
+        else:
+            raise IonException("Illegal character in clob")  # TODO
+        prev = c
+        c, _ = yield trans
+    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.CLOB, ctx.value)
 
 
 @coroutine
@@ -659,11 +741,9 @@ _NULL_TABLE = {
 }
 
 _STRUCT_OR_LOB_TABLE = defaultdict(
-    lambda: struct_handler,
-    {
-        ord('{'): lob_handler
-    }
+    lambda: struct_handler
 )
+_STRUCT_OR_LOB_TABLE[ord('{')] = lob_handler
 
 _START_TABLE = {
     ord('n'): symbol_or_null_handler,
