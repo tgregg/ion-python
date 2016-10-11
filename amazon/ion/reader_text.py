@@ -423,10 +423,10 @@ def sexp_slash_handler(c, ctx):
     assert c == ord('/')
     c, self = yield
     if c == ord('*'):
-        ctx.queue.unread(2)  # Unread /*
+        ctx.queue.unread(b'/*')  # Unread /*
         yield ctx.immediate_transition(comment_handler(ord('/'), ctx, ctx.whence))
     else:
-        ctx.queue.unread(1)  # Unread c
+        ctx.queue.unread(c)  # Unread c
         yield ctx.immediate_transition(operator_symbol_handler(ord('/'), ctx))
 
 @coroutine
@@ -461,7 +461,7 @@ def triple_quote_string_handler(c, ctx):
                     val.append(c)
             else:
                 if quotes > 0:
-                    ctx.queue.unread(quotes + 1)  # un-read the skipped quotes AND c, which will be consumed again later
+                    ctx.queue.unread(tuple([b'\'']*quotes + [c]))  # un-read the skipped quotes AND c, which will be consumed again later
                     if not is_clob:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                     else:
@@ -605,8 +605,8 @@ def symbol_or_null_handler(c, ctx, is_field_name=False):
     in_sexp = ctx.container.ion_type is IonType.SEXP
     if c not in _IDENTIFIER_STARTS:
         if in_sexp and c in _OPERATORS:
-            _, __ = yield
-            ctx.queue.unread(1)
+            c_next, _ = yield
+            ctx.queue.unread(c_next)
             yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
         raise IonException("Illegal character %s in symbol." % (chr(c), ))  # TODO
     val = ctx.value
@@ -660,7 +660,7 @@ def symbol_or_null_handler(c, ctx, is_field_name=False):
 @coroutine
 def sexp_hyphen_handler(c, ctx):
     assert ctx.value[0] == ord('-')
-    ctx.queue.unread(1)
+    ctx.queue.unread(c)
     yield
     if ctx.container.ion_type is not IonType.SEXP:
         raise IonException("Illegal character following -")  # TODO
@@ -848,7 +848,7 @@ def clob_handler(c, ctx):
 @coroutine
 def field_name_handler(c, ctx):
     yield
-    ctx.queue.unread(1)
+    ctx.queue.unread(c)
     if c == ord('\''):
         trans = ctx.immediate_transition(string_or_symbol_handler(c, ctx, is_field_name=True))
     elif c == ord('"'):
@@ -862,7 +862,7 @@ def field_name_handler(c, ctx):
 
 @coroutine
 def struct_handler(c, ctx):
-    ctx.queue.unread(1)  # Necessary because we had to read one char past the { to make sure this isn't a lob
+    ctx.queue.unread(c)  # Necessary because we had to read one char past the { to make sure this isn't a lob
     yield
     yield ctx.event_transition(IonEvent, IonEventType.CONTAINER_START, IonType.STRUCT)
 
@@ -1166,14 +1166,15 @@ def _container_handler(c, ctx):
                 continue
             else:
                 if child_context is not None and child_context.value and child_context.ion_type is IonType.SYMBOL:
-                    if queue.read_byte() == ord(':'):
+                    peek = queue.read_byte()
+                    if peek == ord(':'):
                         child_context = child_context.derive_annotation(child_context.value)
                         c = queue.read_byte()
                         continue
                     else:
                         yield child_context.event_transition(IonEvent, IonEventType.SCALAR, child_context.ion_type,
                                                              child_context.value)[0]
-                        queue.unread(1)
+                        queue.unread(peek)
                         child_context = None
                 if child_context is None or (not child_context.annotations and not child_context.field_name):
                     # This is the start of a new child value.
@@ -1249,7 +1250,7 @@ def reader(queue=None):
             when the ``CONTAINER_END`` event type for that container is encountered.
     """
     if queue is None:
-        queue = BufferQueue(text=True)
+        queue = BufferQueue()
     ctx = _HandlerContext(
         _C_TOP_LEVEL,
         queue=queue,

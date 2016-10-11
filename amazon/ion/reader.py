@@ -30,9 +30,7 @@ from .util import coroutine, Enum
 
 class BufferQueue(object):
     """A simple circular buffer of buffers."""
-    def __init__(self, text=False):
-        self.__text = text
-        self.__segment_index = 0
+    def __init__(self):
         self.__segments = deque()
         self.__offset = 0
         self.__size = 0
@@ -56,10 +54,7 @@ class BufferQueue(object):
 
         data = bytearray()
         while length > 0:
-            if self.__text:
-                segment = segments[self.__segment_index]
-            else:
-                segment = segments[0]
+            segment = segments[0]
             segment_off = offset
             segment_len = len(segment)
             segment_rem = segment_len - segment_off
@@ -80,11 +75,7 @@ class BufferQueue(object):
                 offset = 0
             segment_off += segment_read_len
             if segment_off == segment_len:
-                if self.__text:
-                    self.__segment_index += 1
-                else:
-                    # Text readers may need to un-read data
-                    segments.popleft()
+                segments.popleft()
 
                 self.__offset = 0
             else:
@@ -100,35 +91,31 @@ class BufferQueue(object):
         if self.__size < 1:
             raise IndexError('Buffer queue is empty')
         segments = self.__segments
-        if self.__text:
-            segment = segments[self.__segment_index]
-        else:
-            segment = segments[0]
+        segment = segments[0]
         segment_len = len(segment)
         offset = self.__offset
         octet = six.indexbytes(segment, offset)
         offset += 1
         if offset == segment_len:
             offset = 0
-            if self.__text:
-                self.__segment_index += 1
-            else:
-                # Text readers may need to un-read data
-                segments.popleft()
+            segments.popleft()
         self.__offset = offset
         self.__size -= 1
         self.position += 1
         return octet
 
-    # TODO need some way to signal the buffer that it's okay to drop previous segments, so the buffer doesn't
-    # grow forever
-    def unread(self, num_bytes):
-        assert self.__text  # binary readers have no reason to do this
-        while self.__offset < num_bytes:
-            num_bytes -= self.__offset
-            self.__segment_index -= 1
-            self.__offset = len(self.__segments[self.__segment_index])
-        self.__offset -= num_bytes
+    def unread(self, seq):
+        try:
+            num_bytes = len(seq)
+        except TypeError:
+            num_bytes = 1
+            seq = (seq, )
+        overflow = num_bytes - self.__offset
+        if overflow > 0:
+            self.__segments.appendleft(seq[0:overflow])  # TODO untested
+            self.__offset = 0
+        else:
+            self.__offset -= num_bytes
         self.__size += num_bytes
         self.position -= num_bytes
 
@@ -137,10 +124,7 @@ class BufferQueue(object):
         if length >= self.__size:
             skip_amount = self.__size
             rem = length - skip_amount
-            if self.__text:
-                self.__segment_index = len(self.__segments)
-            else:
-                self.__segments.clear()
+            self.__segments.clear()
             self.__offset = 0
             self.__size = 0
             self.position += skip_amount
