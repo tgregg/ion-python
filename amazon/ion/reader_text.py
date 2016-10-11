@@ -660,6 +660,7 @@ def symbol_or_null_handler(c, ctx, is_field_name=False):
 @coroutine
 def sexp_hyphen_handler(c, ctx):
     assert ctx.value[0] == ord('-')
+    ctx.queue.unread(1)
     yield
     if ctx.container.ion_type is not IonType.SEXP:
         raise IonException("Illegal character following -")  # TODO
@@ -998,20 +999,6 @@ _C_LIST = _Container((ord(']'),), (ord(','),), IonType.LIST)
 _C_SEXP = _Container((ord(')'),), _WHITESPACE, IonType.SEXP)
 
 
-class _ImmediateTransition(Transition):
-    """An immediate transition to another handler, indicating that the next characer should not be read."""
-
-
-def _should_read_next(trans):
-    return not isinstance(trans, _ImmediateTransition)  # TODO better, cleaner way
-
-_IMMEDIATE_HANDLERS = ('sexp_hyphen_handler', )
-
-
-def _is_immediate(handler):
-    return handler.gi_code.co_name in _IMMEDIATE_HANDLERS  # TODO way too much of a hack
-
-
 class _HandlerContext(record(
     'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type'
 )):
@@ -1048,13 +1035,10 @@ class _HandlerContext(record(
 
         If ``delegate`` is not specified, then ``whence`` is the delegate.
         """
-        trans_cls = Transition
         if delegate is None:
             delegate = self.whence
-        elif _is_immediate(delegate):
-            trans_cls = _ImmediateTransition
 
-        return trans_cls(None, delegate), self
+        return Transition(None, delegate), self
 
     def derive_container_context(self, ion_type, whence, add_depth=1):
         if ion_type is IonType.STRUCT:
@@ -1201,8 +1185,7 @@ def _container_handler(c, ctx):
                     handler = _START_TABLE[c](c, child_context)  # Initialize the new handler
             read_next_char = True
             while len(queue) > 0:
-                if read_next_char:
-                    c = queue.read_byte()
+                c = queue.read_byte()
                 trans, child_context = handler.send((c, handler))
                 if trans.event is not None:
                     # This child value is finished. c is now the first character in the next value or sequence.
@@ -1232,7 +1215,6 @@ def _container_handler(c, ctx):
                         # found. In both cases, an event should not be emitted. Read the next character and continue.
                         c = queue.read_byte()  # TODO check if this works at the end of a stream... will c be None'd?
                         break
-                    read_next_char = _should_read_next(trans)
                     # This is either the same handler, or an immediate transition to a new handler if
                     # the type has been narrowed down. In either case, the next character must be read.
                     handler = trans.delegate
