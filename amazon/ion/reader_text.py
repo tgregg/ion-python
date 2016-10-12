@@ -585,23 +585,27 @@ def null_handler(c, ctx):
             if c in _NUMBER_END_SEQUENCE[0] or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):  # TODO CHECK THIS
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, nxt.ion_type, None)
             else:
-                raise IonException("1 Illegal null type %s" % (chr(c), ))
+                raise IonException("Illegal character %s in null type" % (chr(c), ))
         elif length is None:
             if c not in nxt:
-                raise IonException("2 Illegal null type %s" % (chr(c), ))  # TODO
+                raise IonException("Illegal character %s in null type" % (chr(c), ))
             nxt = nxt[c]
             if isinstance(nxt, NullSequence):
                 length = len(nxt.sequence)
         else:
             if c != nxt[i]:
-                raise IonException("3 Illegal null type %s" % (chr(c), ))  # TODO
+                raise IonException("Illegal character %s in null type" % (chr(c), ))
             i += 1
             done = i == length
         c, _ = yield trans
 
 
+_TRUE_SEQUENCE = tuple(ord(x) for x in 'rue')
+_FALSE_SEQUENCE = tuple(ord(x) for x in 'alse')
+
+
 @coroutine
-def symbol_or_null_handler(c, ctx, is_field_name=False):
+def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
     in_sexp = ctx.container.ion_type is IonType.SEXP
     if c not in _IDENTIFIER_STARTS:
         if in_sexp and c in _OPERATORS:
@@ -612,29 +616,70 @@ def symbol_or_null_handler(c, ctx, is_field_name=False):
     val = ctx.value
     val.append(c)
     maybe_null = c == ord('n')
+    maybe_true = c == ord('t')
+    maybe_false = c == ord('f')
     c, self = yield
     trans = (Transition(None, self), None)
-    null_index = 0
+    match_index = 0
     while True:
         if maybe_null:
-            if null_index < len(_NULL_SEQUENCE.sequence):
-                maybe_null = c == _NULL_SEQUENCE[null_index]
+            if match_index < len(_NULL_SEQUENCE.sequence):
+                maybe_null = c == _NULL_SEQUENCE[match_index]
             else:
-                if c in _WHITESPACE:
+                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
                     if is_field_name:
                         raise IonException("Null field name not allowed")
-                    trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
                 elif c == ord('.'):
                     if is_field_name:
                         raise IonException("Illegal character in field name: .")  # TODO
-                    trans = ctx.immediate_transition(null_handler(c, ctx))
+                    yield ctx.immediate_transition(null_handler(c, ctx))
+                elif c == ord(':'):
+                    if is_field_name:
+                        raise IonException("Null field name not allowed")
+                    else:
+                        raise IonException("Illegal character in symbol: :")  # TODO
                 elif in_sexp and c in _OPERATORS:
-                    trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
                 else:
                     maybe_null = False
-        if maybe_null:
+        elif maybe_true:
+            if match_index < len(_TRUE_SEQUENCE):
+                maybe_true = c == _TRUE_SEQUENCE[match_index]
+            else:
+                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                    if is_field_name:
+                        raise IonException("true keyword as field name not allowed")
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, True)
+                elif c == ord(':'):
+                    if is_field_name:
+                        raise IonException("true keyword as field name not allowed")
+                    else:
+                        raise IonException("Illegal character in symbol: :")  # TODO
+                elif in_sexp and c in _OPERATORS:
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, True)
+                else:
+                    maybe_true = False
+        elif maybe_false:
+            if match_index < len(_FALSE_SEQUENCE):
+                maybe_false = c == _FALSE_SEQUENCE[match_index]
+            else:
+                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                    if is_field_name:
+                        raise IonException("false keyword as field name not allowed")
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, False)
+                elif c == ord(':'):
+                    if is_field_name:
+                        raise IonException("false keyword as field name not allowed")
+                    else:
+                        raise IonException("Illegal character in symbol: :")  # TODO
+                elif in_sexp and c in _OPERATORS:
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, False)
+                else:
+                    maybe_false = False
+        if maybe_null or maybe_true or maybe_false:
             val.append(c)
-            null_index += 1
+            match_index += 1
         else:
             ctx = ctx.derive_ion_type(IonType.SYMBOL)
             if c in _WHITESPACE or c == ord('/'):
@@ -643,12 +688,15 @@ def symbol_or_null_handler(c, ctx, is_field_name=False):
                 # This might be an annotation
                 trans = ctx.immediate_transition(ctx.whence)
             elif c == ord(':'):
-                # This must be an annotation.
-                c, _ = yield trans
-                if c == ord(':'):
-                    ctx = ctx.derive_annotation(val)
+                if is_field_name:
+                    ctx = ctx.derive_field_name(val)
                 else:
-                    raise IonException("Illegal character : after symbol")
+                    # This must be an annotation.
+                    c, _ = yield trans
+                    if c == ord(':'):
+                        ctx = ctx.derive_annotation(val)
+                    else:
+                        raise IonException("Illegal character : after symbol")
                 yield ctx.immediate_transition(ctx.whence)
             elif c in ctx.container.end_sequence or c in ctx.container.delimiter or (in_sexp and c in _OPERATORS):
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val)
@@ -854,7 +902,7 @@ def field_name_handler(c, ctx):
     elif c == ord('"'):
         trans = ctx.immediate_transition(string_handler(c, ctx, is_field_name=True))
     elif c in _IDENTIFIER_STARTS:
-        trans = ctx.immediate_transition(symbol_handler(c, ctx, is_field_name=True))
+        trans = ctx.immediate_transition(symbol_or_null_or_bool_handler(c, ctx, is_field_name=True))
     else:
         raise IonException("Illegal character %s in field name." % (chr(c), ))
     yield trans
@@ -960,7 +1008,7 @@ _STRUCT_OR_LOB_TABLE = defaultdict(
 _STRUCT_OR_LOB_TABLE[ord('{')] = lob_handler
 
 _START_TABLE = defaultdict(
-    lambda: symbol_or_null_handler
+    lambda: symbol_or_null_or_bool_handler
 )
 _START_TABLE[ord('-')] = number_negative_start_handler
 _START_TABLE[ord('0')] = number_zero_start_handler
