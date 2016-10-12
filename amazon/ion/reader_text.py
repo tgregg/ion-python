@@ -27,9 +27,6 @@ from amazon.ion.reader import BufferQueue, reader_trampoline
 from amazon.ion.util import record, coroutine, Enum
 
 
-#def character_table(table):
-#    return defaultdict(lambda k: _ion_exception('Illegal character %s found.' % (k,)), table)
-
 def get(table, c):
     if c not in table:
         raise IonException('Illegal character %s' % (chr(c),))
@@ -53,6 +50,8 @@ def number_zero_start_handler(c, ctx):
     ctx = ctx.derive_ion_type(IonType.INT)
     ctx.value.append(c)
     c, _ = yield
+    if c in _NUMBER_END_SEQUENCE[0]:
+        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
     yield ctx.immediate_transition(get(_ZERO_START_TABLE, c)(c, ctx))
 
 
@@ -149,17 +148,23 @@ def decimal_handler(c, ctx):
     if c == _UNDERSCORE:
         raise IonException('Underscore after exponent')
     trans = (Transition(None, self), None)
+    negative_exp = False
     while True:
         if c in _NUMBER_END_SEQUENCE[0]:
-            if prev == _UNDERSCORE or prev == ord('d') or c == ord('D'):
+            if prev == _UNDERSCORE or prev == ord('d') or c == ord('D') or prev == ord('-'):
                 raise IonException('%s at end of decimal' % (chr(prev),))
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         else:
             if c == _UNDERSCORE:
-                if prev == _UNDERSCORE or prev == ord('d') or c == ord('D'):
+                if prev == _UNDERSCORE or prev == ord('d') or c == ord('D') or prev == ord('-'):
                     raise IonException('Underscore after %s' % (chr(prev),))
             else:
-                if c not in _DIGITS:
+                if c == ord('-'):
+                    if negative_exp:
+                        raise IonException('Multiple negatives in decimal exponent')
+                    negative_exp = True
+                    val.append(c)
+                elif c not in _DIGITS:
                     trans = ctx.immediate_transition(_DECIMAL_TABLE[c](c, ctx))
                 else:
                     val.append(c)
@@ -178,18 +183,24 @@ def float_handler(c, ctx):
     if c == _UNDERSCORE:
         raise IonException('Underscore after exponent')
     trans = (Transition(None, self), None)
+    negative_exp = False
     while True:
         if c in _NUMBER_END_SEQUENCE[0]:
-            if prev == _UNDERSCORE or prev == ord('d') or c == ord('E'):
-                raise IonException('%s at end of decimal' % (chr(prev),))
+            if prev == _UNDERSCORE or prev == ord('e') or c == ord('E') or prev == ord('-'):
+                raise IonException('%s at end of float' % (chr(prev),))
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         else:
             if c == _UNDERSCORE:
-                if prev == _UNDERSCORE or prev == ord('e') or c == ord('E'):
+                if prev == _UNDERSCORE or prev == ord('e') or c == ord('E') or prev == ord('-'):
                     raise IonException('Underscore after %s' % (chr(prev),))
                 val.append(c)
             else:
-                if c not in _DIGITS:
+                if c == ord('-'):
+                    if negative_exp:
+                        raise IonException('Multiple negatives in float exponent')
+                    negative_exp = True
+                    val.append(c)
+                elif c not in _DIGITS:
                     trans = ctx.immediate_transition(_FLOAT_TABLE[c](c, ctx))
                 else:
                     val.append(c)
@@ -1241,7 +1252,7 @@ def _container_handler(c, ctx):
                     # Hence, a new character should not be read; it should be provided to the handler for the next
                     # child context.
                     yield trans
-                    if trans.event.ion_type.is_container:
+                    if trans.event.ion_type.is_container and trans.event.event_type is not IonEventType.SCALAR:
                         yield Transition(
                             None,
                             _container_handler(c, ctx.derive_container_context(trans.event.ion_type, self))

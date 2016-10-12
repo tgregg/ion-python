@@ -109,7 +109,7 @@ class BufferQueue(object):
             num_bytes = len(seq)
         except TypeError:
             num_bytes = 1
-            seq = (seq, )
+            seq = chr(seq)  # TODO check
         overflow = num_bytes - self.__offset
         if overflow > 0:
             self.__segments.appendleft(seq[0:overflow])  # TODO untested
