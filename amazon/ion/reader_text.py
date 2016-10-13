@@ -1238,14 +1238,20 @@ def _container_handler(c, ctx):
                 if child_context is None or (not child_context.annotations and not child_context.field_name):
                     # This is the start of a new child value.
                     child_context = ctx.derive_child_context(None, None, self, bytearray(), None)
-                # is_field_name = not is_field_name
                 if is_field_name and ctx.ion_type is IonType.STRUCT:
                     handler = field_name_handler(c, child_context)
                 else:
                     handler = _START_TABLE[c](c, child_context)  # Initialize the new handler
-            read_next_char = True
-            while len(queue) > 0:
+            while True:
+                if len(queue) == 0:
+                    yield Transition(None, _read_data_handler(self, ctx))
                 c = queue.read_byte()
+                if c is None:
+                    if ctx.depth == 0:
+                        # This is the top level
+                        yield Transition(None, _read_data_handler(self, ctx, ION_STREAM_END_EVENT))
+                    else:
+                        yield Transition(None, _read_data_handler(self, ctx))
                 trans, child_context = handler.send((c, handler))
                 if trans.event is not None:
                     # This child value is finished. c is now the first character in the next value or sequence.
@@ -1279,13 +1285,16 @@ def _container_handler(c, ctx):
                     # the type has been narrowed down. In either case, the next character must be read.
                     handler = trans.delegate
             if len(queue) == 0:
-                # TODO yield incomplete from read data handler?
+                # This will cause the next loop to fall through to the else branch below to ask for more input.
                 c = None
         elif len(queue) > 0:
             c = queue.read_byte()
         else:
-            # This is the top level
-            yield Transition(None, _read_data_handler(self, ctx, ION_STREAM_END_EVENT))
+            if ctx.depth == 0:
+                # This is the top level
+                yield Transition(None, _read_data_handler(self, ctx, ION_STREAM_END_EVENT))
+            else:
+                yield Transition(None, _read_data_handler(self, ctx))
 
 
 def reader(queue=None):
