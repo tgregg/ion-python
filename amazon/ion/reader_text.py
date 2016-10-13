@@ -1215,7 +1215,8 @@ def _container_handler(c, ctx):
             )
         if c in ctx.container.delimiter:
             is_field_name = True
-        if c is not None and c not in _WHITESPACE and c not in ctx.container.delimiter:
+            c = None
+        if c is not None and c not in _WHITESPACE:
             if c == ord('/') and ctx.ion_type is not IonType.SEXP:
                 in_comment = True
                 handler = comment_handler(c, child_context, self)
@@ -1225,10 +1226,13 @@ def _container_handler(c, ctx):
                 continue
             else:
                 if child_context is not None and child_context.value and child_context.ion_type is IonType.SYMBOL:
-                    peek = queue.read_byte()
+                    peek = queue.read_byte()  # TODO what about end of stream?
                     if peek == ord(':'):
                         child_context = child_context.derive_annotation(child_context.value)
                         c = queue.read_byte()
+                        continue
+                    elif peek in ctx.container.end_sequence:
+                        c = peek
                         continue
                     else:
                         yield child_context.event_transition(IonEvent, IonEventType.SCALAR, child_context.ion_type,
@@ -1242,16 +1246,16 @@ def _container_handler(c, ctx):
                     handler = field_name_handler(c, child_context)
                 else:
                     handler = _START_TABLE[c](c, child_context)  # Initialize the new handler
+            container_start = c == ord(b'[') or c == ord(b'(')  # Note: '{' not here because that might be a lob
+            read_next = True
             while True:
-                if len(queue) == 0:
-                    yield Transition(None, _read_data_handler(self, ctx))
-                c = queue.read_byte()
-                if c is None:
-                    if ctx.depth == 0:
-                        # This is the top level
-                        yield Transition(None, _read_data_handler(self, ctx, ION_STREAM_END_EVENT))
-                    else:
+                if not container_start:
+                    if len(queue) == 0:
                         yield Transition(None, _read_data_handler(self, ctx))
+                    c = queue.read_byte()
+                else:
+                    c = None
+                    container_start = False
                 trans, child_context = handler.send((c, handler))
                 if trans.event is not None:
                     # This child value is finished. c is now the first character in the next value or sequence.
@@ -1264,7 +1268,11 @@ def _container_handler(c, ctx):
                             _container_handler(c, ctx.derive_container_context(trans.event.ion_type, self))
                         )
                         # The end of the container has been reached, and c needs to be updated
-                        c = queue.read_byte()  # TODO check end of stream
+                        if len(queue) > 0:
+                            c = queue.read_byte()  # TODO check if this works with one character left at end of stream. The new c will be lost
+                            read_next = False
+                    else:
+                        read_next = False
                     break
                 else:
                     if self is trans.delegate:
@@ -1284,7 +1292,7 @@ def _container_handler(c, ctx):
                     # This is either the same handler, or an immediate transition to a new handler if
                     # the type has been narrowed down. In either case, the next character must be read.
                     handler = trans.delegate
-            if len(queue) == 0:
+            if read_next and len(queue) == 0:
                 # This will cause the next loop to fall through to the else branch below to ask for more input.
                 c = None
         elif len(queue) > 0:
