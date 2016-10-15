@@ -1203,6 +1203,7 @@ def _container_handler(c, ctx):
     child_context = None
     is_field_name = True
     in_comment = False
+    delimiter_required = False
     while True:
         if c in ctx.container.end_sequence:
             if child_context and child_context.ion_type is IonType.SYMBOL:
@@ -1215,7 +1216,10 @@ def _container_handler(c, ctx):
             )
         if c in ctx.container.delimiter:
             is_field_name = True
+            delimiter_required = False
             c = None
+        elif delimiter_required:
+            raise IonException("Delimiter %s not found after value within %s." % (chr(ctx.container.delimiter[0]), ctx.container.ion_type.name))
         if c is not None and c not in _WHITESPACE:
             if c == ord('/') and ctx.ion_type is not IonType.SEXP:
                 in_comment = True
@@ -1273,6 +1277,7 @@ def _container_handler(c, ctx):
                             read_next = False
                     else:
                         read_next = False
+                    delimiter_required = not ((not ctx.container.ion_type) or ctx.container.ion_type is IonType.SEXP)
                     break
                 else:
                     if self is trans.delegate:
