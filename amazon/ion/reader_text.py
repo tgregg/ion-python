@@ -1287,7 +1287,8 @@ def _container_handler(c, ctx):
                             in_comment = False
                         # This happens at the end of a comment within this container, or when an annotation has been
                         # found. In both cases, an event should not be emitted. Read the next character and continue.
-                        c = queue.read_byte()  # TODO check if this works at the end of a stream... will c be None'd?
+                        if len(queue) > 0:
+                            c = queue.read_byte()  # TODO check if this works at the end of a stream... will c be None'd?
                         break
                     # This is either the same handler, or an immediate transition to a new handler if
                     # the type has been narrowed down. In either case, the next character must be read.
