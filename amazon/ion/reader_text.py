@@ -433,11 +433,10 @@ def comment_handler(c, ctx, whence):
 def sexp_slash_handler(c, ctx):
     assert c == ord('/')
     c, self = yield
-    if c == ord('*'):
-        ctx.queue.unread(b'/*')  # Unread /*
+    ctx.queue.unread(c)
+    if c == ord('*') or c == ord('/'):
         yield ctx.immediate_transition(comment_handler(ord('/'), ctx, ctx.whence))
     else:
-        ctx.queue.unread(c)  # Unread c
         yield ctx.immediate_transition(operator_symbol_handler(ord('/'), ctx))
 
 @coroutine
@@ -1218,7 +1217,7 @@ def _container_handler(c, ctx):
             is_field_name = True
             delimiter_required = False
             c = None
-        elif delimiter_required:
+        elif delimiter_required and c != ord('/'):
             raise IonException("Delimiter %s not found after value within %s." % (chr(ctx.container.delimiter[0]), ctx.container.ion_type.name))
         if c is not None and c not in _WHITESPACE:
             if c == ord('/') and ctx.ion_type is not IonType.SEXP:
@@ -1273,7 +1272,7 @@ def _container_handler(c, ctx):
                         )
                         # The end of the container has been reached, and c needs to be updated
                         if len(queue) > 0:
-                            c = queue.read_byte()  # TODO check if this works with one character left at end of stream. The new c will be lost
+                            c = queue.read_byte()
                             read_next = False
                     else:
                         read_next = False
@@ -1293,7 +1292,8 @@ def _container_handler(c, ctx):
                         # This happens at the end of a comment within this container, or when an annotation has been
                         # found. In both cases, an event should not be emitted. Read the next character and continue.
                         if len(queue) > 0:
-                            c = queue.read_byte()  # TODO check if this works at the end of a stream... will c be None'd?
+                            c = queue.read_byte()
+                            read_next = False
                         break
                     # This is either the same handler, or an immediate transition to a new handler if
                     # the type has been narrowed down. In either case, the next character must be read.
