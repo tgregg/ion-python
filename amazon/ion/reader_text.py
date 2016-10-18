@@ -377,6 +377,7 @@ def timestamp_handler(c, ctx):
 
 @coroutine
 def string_handler(c, ctx, is_field_name=False):
+    # TODO parse unicode escapes (in parser)
     assert c == ord('"')
     is_clob = ctx.ion_type is IonType.CLOB
     if not is_clob:
@@ -1219,8 +1220,6 @@ def _container_handler(c, ctx):
             is_field_name = True
             delimiter_required = False
             c = None
-        elif delimiter_required and c != ord('/'):
-            raise IonException("Delimiter %s not found after value within %s." % (chr(ctx.container.delimiter[0]), ctx.container.ion_type.name))
         if c is not None and c not in _WHITESPACE:
             if c == ord('/'):
                 if child_context is None or (not child_context.annotations and not child_context.field_name):
@@ -1231,6 +1230,10 @@ def _container_handler(c, ctx):
                     handler = sexp_slash_handler(c, child_context)
                 else:
                     handler = comment_handler(c, child_context, self)
+            elif delimiter_required:
+                # This is not the delimiter, or whitespace, or the start of a comment. Throw.
+                raise IonException("Delimiter %s not found after value within %s." % (
+                    chr(ctx.container.delimiter[0]), ctx.container.ion_type.name))
             elif c == ord(':') and is_field_name and ctx.ion_type is IonType.STRUCT:
                 is_field_name = False
                 c = queue.read_byte()
