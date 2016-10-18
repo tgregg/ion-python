@@ -331,17 +331,25 @@ def _containerize_params(nested_params, with_skip=True):
             )
 
 
-def _ion_exception(text):
+def _expect_event(expected_event, postpend, desc, text, events=()):
+    """Generates event pairs for a stream that ends in an expected event (or exception), given the text and the output
+    events preceding the expected event.
+    """
+    events += (expected_event,)
+    outputs = events[1:]
+    event_pairs = [(e_read(text + postpend), events[0])] + zip([NEXT]*len(outputs), outputs)
     return _P(
-        desc='BAD %s' % (text,),
-        event_pairs=[
-            (NEXT, END),
-            (e_read(text + b' '), IonException)
-        ]
+        desc='%s %s' % (desc, text),
+        event_pairs=[(NEXT, END)] + event_pairs
     )
 
 
+_ion_exception = partial(_expect_event, IonException, b' ', 'BAD')
+_incomplete = partial(_expect_event, INC, b'', 'INC')
+
 _BAD = (
+    _ion_exception(b'+1'),
+    _ion_exception(b'01'),
     _ion_exception(b'1__0'),
     _ion_exception(b'1_e1'),
     _ion_exception(b'1e_1'),
@@ -354,21 +362,73 @@ _BAD = (
     _ion_exception(b'0b_1'),
     _ion_exception(b'null.strings'),
     _ion_exception(b'200T'),
+    _ion_exception(b'2000-01'),
+    _ion_exception(b'2007-02-23T20:14:33.Z'),
     _ion_exception(b'1a'),
     # _ion_exception(b'{{/**/}}'),  # TODO these are all lexed as blobs. Once base64 parsing is included, they will fail
     # _ion_exception(b'{{//\n}}'),
     # _ion_exception(b'{{/**/"abc"}}'),
     _ion_exception(b'{{"abc"//\n}}'),
     _ion_exception(b'{{\'\'\'abc\'\'\'//\n\'\'\'def\'\'\'}}'),
+    _ion_exception(b'{{ abcd} }'),
+    _ion_exception(b'{ {abcd}}', (e_start_struct(),)),
+    _ion_exception(b'{foo:bar/**/baz:zar}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
+    _ion_exception(b'[abc 123]', (e_start_list(), e_symbol(value=b'abc'))),
+    _ion_exception(b'{foo::bar:baz}', (e_start_struct(),)),
+    _ion_exception(b'[abc, , 123]', (e_start_list(), e_symbol(value=b'abc'))),
+    _ion_exception(b'{foo:bar, ,}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'),))
+)
+
+_INCOMPLETE = (
+    _incomplete(b'{'),  # Might be a lob.
+    _incomplete(b'{ ', (e_start_struct(),)),
+    _incomplete(b'[', (e_start_list(),)),
+    _incomplete(b'(', (e_start_sexp(),)),
+    _incomplete(b'[[]', (e_start_list(), e_start_list(), e_end_list())),
+    _incomplete(b'(()', (e_start_sexp(), e_start_sexp(), e_end_sexp())),
+    _incomplete(b'{foo:{}', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
+    _incomplete(b'{foo:bar', (e_start_struct(),)),
+    _incomplete(b'{foo:bar::', (e_start_struct(),)),
+    _incomplete(b'{foo:bar,', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
+    _incomplete(b'[[],', (e_start_list(), e_start_list(), e_end_list())),
+    _incomplete(b'{foo:{},', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
+    _incomplete(b'foo'),  # Might be an annotation.
+    _incomplete(b'\'foo\''),  # Might be an annotation.
+    _incomplete(b'\'\'\'foo\'\'\'/**/'),  # Might be followed by another triple-quoted string.
+    _incomplete(b'123'),  # Might have more digits.
+    _incomplete(b'-'),
+    _incomplete(b'1.2'),
+    _incomplete(b'1.2e'),
+    _incomplete(b'1.2e-'),
+    _incomplete(b'1.2d'),
+    _incomplete(b'1.2d3'),
+    _incomplete(b'1_'),
+    _incomplete(b'0b'),
+    _incomplete(b'0x'),
+    _incomplete(b'2000-01'),
+    _incomplete(b'"abc'),
+    _incomplete(b'false'),  # Might be a symbol with more characters.
+    _incomplete(b'null.string'),  # Might be a symbol with more characters.
+    _incomplete(b'/*'),
+    _incomplete(b'//'),
+    _incomplete(b'foo:'),
+    _incomplete(b'foo::'),
+    _incomplete(b'foo::bar'),
+    _incomplete(b'foo//\n'),
+    _incomplete(b'{foo', (e_start_struct(),)),
+    _incomplete(b'{{'),
+    _incomplete(b'{{"'),
+    _incomplete(b'(foo-', (e_start_sexp(), e_symbol(value=b'foo'))),
+    _incomplete(b'(-foo', (e_start_sexp(), e_symbol(value=b'-'))),
 )
 
 
-# TODO test incomplete events, negative tests
 # TODO containers within containers
-
+# TODO sexps without space delimiters
 
 @parametrize(*chain(
     _BAD,
+    _INCOMPLETE,
     _top_level_value_params(),  # all top-level values as individual data events, space-delimited
     _all_top_level_as_one_stream_params(),  # all top-level values as one data event, space-delimited
     _all_top_level_as_one_stream_params(b'/*foo*/'),  # all top-level values as one data event, block comment delimited

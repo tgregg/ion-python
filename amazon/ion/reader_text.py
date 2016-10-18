@@ -722,16 +722,15 @@ def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
 @coroutine
 def sexp_hyphen_handler(c, ctx):
     assert ctx.value[0] == ord('-')
+    assert c not in _DIGITS
     ctx.queue.unread(c)
     yield
     if ctx.container.ion_type is not IonType.SEXP:
         raise IonException("Illegal character following -")  # TODO
     if c in _OPERATORS:
         yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
-    elif c in ctx.container.delimiter or c in ctx.container.end_sequence:
-        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
     else:
-        raise IonException("Illegal character following -")  # TODO
+        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
 
 
 @coroutine
