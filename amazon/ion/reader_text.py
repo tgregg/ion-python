@@ -1221,7 +1221,7 @@ def _container_handler(c, ctx):
             c = None
         if c is not None and c not in _WHITESPACE:
             if c == ord('/'):
-                if child_context is None or (not child_context.annotations and not child_context.field_name):
+                if child_context is None:
                     # TODO duplicated in a branch below
                     # This is the start of a new child value.
                     child_context = ctx.derive_child_context(None, None, self, bytearray(), None)
@@ -1240,18 +1240,19 @@ def _container_handler(c, ctx):
             else:
                 # TODO does c need to be checked against ':' here?
                 if child_context is not None and child_context.value and child_context.ion_type is IonType.SYMBOL:
-                    peek = queue.read_byte()  # TODO what about end of stream?
-                    if peek == ord(':'):
-                        child_context = child_context.derive_annotation(child_context.value)
-                        c = queue.read_byte()  # TODO check end of stream
-                        continue
-                    elif peek in ctx.container.end_sequence:
-                        c = peek
-                        continue
+                    if c == ord(':'):
+                        # Note: field name covered in a previous branch, so not seeing another : here is definitely
+                        # an error.
+                        peek = queue.read_byte()  # TODO what about end of stream?
+                        if peek == ord(':'):
+                            child_context = child_context.derive_annotation(child_context.value)
+                            c = None  # forces another character to be read safely
+                            continue
+                        else:
+                            raise IonException("Illegal character : in symbol")
                     else:
                         yield child_context.event_transition(IonEvent, IonEventType.SCALAR, child_context.ion_type,
                                                              child_context.value)[0]
-                        queue.unread(peek)
                         child_context = None
                 if child_context is None or (not child_context.annotations and not child_context.field_name):
                     # This is the start of a new child value.
