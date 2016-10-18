@@ -404,6 +404,10 @@ def string_handler(c, ctx, is_field_name=False):
         yield ctx.immediate_transition(clob_handler(c, ctx))
 
 
+class _CommentTransition(Transition):
+    """Signals that this transition terminates a comment."""
+
+
 @coroutine
 def comment_handler(c, ctx, whence):
     assert c == ord('/')
@@ -426,7 +430,7 @@ def comment_handler(c, ctx, whence):
         else:
             if c == ord('\n'):
                 done = True
-    yield (Transition(None, whence), ctx)
+    yield (_CommentTransition(None, whence), ctx)
 
 
 @coroutine
@@ -477,13 +481,12 @@ def triple_quote_string_handler(c, ctx):
                     else:
                         trans = ctx.immediate_transition(clob_handler(c, ctx))
                 elif c not in _WHITESPACE:
-                    if c == ord('/'):
+                    if is_clob:
+                        trans = ctx.immediate_transition(clob_handler(c, ctx))
+                    elif c == ord('/'):
                         trans = ctx.immediate_transition(comment_handler(c, ctx, self))
                     else:
-                        if not is_clob:
-                            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-                        else:
-                            trans = ctx.immediate_transition(clob_handler(c, ctx))
+                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         prev = c
         c, _ = yield trans
 
@@ -1201,7 +1204,6 @@ def _container_handler(c, ctx):
     queue = ctx.queue
     child_context = None
     is_field_name = True
-    in_comment = False
     delimiter_required = False
     while True:
         if c in ctx.container.end_sequence:
@@ -1220,19 +1222,26 @@ def _container_handler(c, ctx):
         elif delimiter_required and c != ord('/'):
             raise IonException("Delimiter %s not found after value within %s." % (chr(ctx.container.delimiter[0]), ctx.container.ion_type.name))
         if c is not None and c not in _WHITESPACE:
-            if c == ord('/') and ctx.ion_type is not IonType.SEXP:
-                in_comment = True
-                handler = comment_handler(c, child_context, self)
+            if c == ord('/'):
+                if child_context is None or (not child_context.annotations and not child_context.field_name):
+                    # TODO duplicated in a branch below
+                    # This is the start of a new child value.
+                    child_context = ctx.derive_child_context(None, None, self, bytearray(), None)
+                if ctx.ion_type is IonType.SEXP:
+                    handler = sexp_slash_handler(c, child_context)
+                else:
+                    handler = comment_handler(c, child_context, self)
             elif c == ord(':') and is_field_name and ctx.ion_type is IonType.STRUCT:
                 is_field_name = False
                 c = queue.read_byte()
                 continue
             else:
+                # TODO does c need to be checked against ':' here?
                 if child_context is not None and child_context.value and child_context.ion_type is IonType.SYMBOL:
                     peek = queue.read_byte()  # TODO what about end of stream?
                     if peek == ord(':'):
                         child_context = child_context.derive_annotation(child_context.value)
-                        c = queue.read_byte()
+                        c = queue.read_byte()  # TODO check end of stream
                         continue
                     elif peek in ctx.container.end_sequence:
                         c = peek
@@ -1280,6 +1289,7 @@ def _container_handler(c, ctx):
                     break
                 else:
                     if self is trans.delegate:
+                        in_comment = isinstance(trans, _CommentTransition)
                         if is_field_name and ctx.ion_type is IonType.STRUCT:
                             if c == ord(':'):
                                 is_field_name = False
@@ -1287,8 +1297,6 @@ def _container_handler(c, ctx):
                                 break
                         elif child_context and child_context.ion_type is IonType.SYMBOL and not in_comment:
                             break
-                        if in_comment:
-                            in_comment = False
                         # This happens at the end of a comment within this container, or when an annotation has been
                         # found. In both cases, an event should not be emitted. Read the next character and continue.
                         if len(queue) > 0:

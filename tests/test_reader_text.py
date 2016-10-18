@@ -19,6 +19,7 @@ from __future__ import print_function
 
 from itertools import chain
 
+from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
 from amazon.ion.reader_text import reader
 from tests import listify, parametrize
@@ -159,7 +160,7 @@ def _top_level_iter(postpend=b' '):
 
 
 # TODO how to consolidate this pythonically with the previous method?
-def _all_top_level_iter(postpend=b' '):
+def _all_top_level_iter(postpend):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     for seq in _ALL_TOP_LEVEL_VALUES:
         data = seq[0]
@@ -170,18 +171,18 @@ def _all_top_level_iter(postpend=b' '):
 def _scalar_params(delimiter=b''):
     for data, event_pairs in _top_level_iter(delimiter):
         yield _P(
-            desc=None,  # These params will be further derived and given a description then.
+            desc=data,
             event_pairs=event_pairs + [(NEXT, INC)]
         )
 
 
-def _top_level_value_params():
+def _top_level_value_params(postpend=b' '):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     """Converts the top-level tuple list into parameters with appropriate ``NEXT`` inputs.
 
     The expectation is starting from an end of stream top-level context.
     """
-    for data, event_pairs in _all_top_level_iter():
+    for data, event_pairs in _all_top_level_iter(postpend):
         _, first = event_pairs[0]
         yield _P(
             desc='TL %s - %s - %r' % \
@@ -205,12 +206,12 @@ def _all_scalars_in_one_container_params(delimiter):
     )
 
 
-def _all_top_level_as_one_stream_params():
+def _all_top_level_as_one_stream_params(postpend=b' '):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     @listify
     def generate_event_pairs():
         yield (NEXT, END)
-        for data, event_pairs in _all_top_level_iter():
+        for data, event_pairs in _all_top_level_iter(postpend):
             for event_pair in event_pairs:
                 yield event_pair
             yield (NEXT, END)
@@ -281,19 +282,27 @@ def _generate_field_name():
             i = 0
 
 
-def _containerize_params(params, with_skip=True):
+def _containerize_params(nested_params, with_skip=True):
     """Adds container wrappers for a given iteration of parameters.
 
     The requirement is that each parameter is a self-contained single value.
     """
-    # TODO structs, skipping
-    # TODO the symbols scalars SHOULD fail because there are two values without a delimiter
+    # TODO skipping
     name_generator = _generate_field_name()
     for info in ((IonType.LIST, b'[', b']', b','),
-                 (IonType.SEXP, b'(', b')', b' '),
-                 (IonType.STRUCT, b'{ ', b'}', b',')):  # space after struct for instant start_container event
+                 (IonType.SEXP, b'(', b')', b' '),  # TODO sexps without space delimiters are tested separately
+                 (IonType.STRUCT, b'{ ', b'}', b','),
+                 (IonType.LIST, b'[/**/', b'//\n]', b'//\n,'),
+                 (IonType.SEXP, b'(//\n', b'/**/)', b'/**/'),  # TODO sexps without space delimiters are tested separately
+                 (IonType.STRUCT, b'{/**/', b'//\n}', b'/**/,')):  # space after opening bracket for instant start_container event
         ion_type = info[0]
-        params_list = list(params(info[3]))
+        param_generator = None
+        for nested_param in nested_params:
+            if param_generator is None:
+                param_generator = nested_param(info[3])
+            else:
+                param_generator = nested_param(param_generator)
+        params_list = list(param_generator)
         for param in params_list:
             @listify
             def add_field_names(event_pairs):
@@ -322,12 +331,54 @@ def _containerize_params(params, with_skip=True):
             )
 
 
+def _ion_exception(text):
+    return _P(
+        desc='BAD %s' % (text,),
+        event_pairs=[
+            (NEXT, END),
+            (e_read(text + b' '), IonException)
+        ]
+    )
+
+
+_BAD = (
+    _ion_exception(b'1__0'),
+    _ion_exception(b'1_e1'),
+    _ion_exception(b'1e_1'),
+    _ion_exception(b'1e1_'),
+    _ion_exception(b'1._0'),
+    _ion_exception(b'1_.0'),
+    _ion_exception(b'-_1'),
+    _ion_exception(b'1_'),
+    _ion_exception(b'0_x1'),
+    _ion_exception(b'0b_1'),
+    _ion_exception(b'null.strings'),
+    _ion_exception(b'200T'),
+    _ion_exception(b'1a'),
+    # _ion_exception(b'{{/**/}}'),  # TODO these are all lexed as blobs. Once base64 parsing is included, they will fail
+    # _ion_exception(b'{{//\n}}'),
+    # _ion_exception(b'{{/**/"abc"}}'),
+    _ion_exception(b'{{"abc"//\n}}'),
+    _ion_exception(b'{{\'\'\'abc\'\'\'//\n\'\'\'def\'\'\'}}'),
+)
+
+
+# TODO test incomplete events, negative tests
+# TODO containers within containers
+
+
 @parametrize(*chain(
-    _top_level_value_params(),
-    _all_top_level_as_one_stream_params(),
-    _annotate_params(_top_level_value_params()),
-    _containerize_params(_scalar_params),
-    _containerize_params(_all_scalars_in_one_container_params),
+    _BAD,
+    _top_level_value_params(),  # all top-level values as individual data events, space-delimited
+    _all_top_level_as_one_stream_params(),  # all top-level values as one data event, space-delimited
+    _all_top_level_as_one_stream_params(b'/*foo*/'),  # all top-level values as one data event, block comment delimited
+    _all_top_level_as_one_stream_params(b'//foo\n'),  # all top-level values as one data event, line comment delimited
+    _annotate_params(_top_level_value_params()),  # all annotated top-level values, spaces postpended
+    _annotate_params(_top_level_value_params(b'//foo\n/*bar*/')),  # all annotated top-level values, comments postpended
+    _containerize_params((_scalar_params,)),  # all values, each as the only value within a container
+    _containerize_params((_scalar_params, _annotate_params)),  # all values, each as the only value within a container
+    _containerize_params((_all_scalars_in_one_container_params,)),  # all values within a single container
+    _containerize_params((_all_scalars_in_one_container_params, _annotate_params)),  # all values annotated
 ))
 def test_raw_reader(p):
     reader_scaffold(reader(), p.event_pairs)

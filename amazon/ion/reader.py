@@ -105,6 +105,7 @@ class BufferQueue(object):
         return octet
 
     def unread(self, seq):
+        # TODO add unit testing to test_reader_buffer
         try:
             num_bytes = len(seq)
         except TypeError:
