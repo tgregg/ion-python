@@ -346,89 +346,174 @@ def _expect_event(expected_event, postpend, desc, text, events=()):
 
 _ion_exception = partial(_expect_event, IonException, b' ', 'BAD')
 _incomplete = partial(_expect_event, INC, b'', 'INC')
+_good = partial(_expect_event, END, b'', 'GOOD')
 
-_BAD = (
-    _ion_exception(b'+1'),
-    _ion_exception(b'01'),
-    _ion_exception(b'1__0'),
-    _ion_exception(b'1_e1'),
-    _ion_exception(b'1e_1'),
-    _ion_exception(b'1e1_'),
-    _ion_exception(b'1._0'),
-    _ion_exception(b'1_.0'),
-    _ion_exception(b'-_1'),
-    _ion_exception(b'1_'),
-    _ion_exception(b'0_x1'),
-    _ion_exception(b'0b_1'),
-    _ion_exception(b'null.strings'),
-    _ion_exception(b'200T'),
-    _ion_exception(b'2000-01'),
-    _ion_exception(b'2007-02-23T20:14:33.Z'),
-    _ion_exception(b'1a'),
-    # _ion_exception(b'{{/**/}}'),  # TODO these are all lexed as blobs. Once base64 parsing is included, they will fail
-    # _ion_exception(b'{{//\n}}'),
-    # _ion_exception(b'{{/**/"abc"}}'),
-    _ion_exception(b'{{"abc"//\n}}'),
-    _ion_exception(b'{{\'\'\'abc\'\'\'//\n\'\'\'def\'\'\'}}'),
-    _ion_exception(b'{{ abcd} }'),
-    _ion_exception(b'{ {abcd}}', (e_start_struct(),)),
-    _ion_exception(b'{foo:bar/**/baz:zar}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
-    _ion_exception(b'[abc 123]', (e_start_list(), e_symbol(value=b'abc'))),
-    _ion_exception(b'{foo::bar:baz}', (e_start_struct(),)),
-    _ion_exception(b'[abc, , 123]', (e_start_list(), e_symbol(value=b'abc'))),
-    _ion_exception(b'{foo:bar, ,}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'),))
-)
 
-_INCOMPLETE = (
-    _incomplete(b'{'),  # Might be a lob.
-    _incomplete(b'{ ', (e_start_struct(),)),
-    _incomplete(b'[', (e_start_list(),)),
-    _incomplete(b'(', (e_start_sexp(),)),
-    _incomplete(b'[[]', (e_start_list(), e_start_list(), e_end_list())),
-    _incomplete(b'(()', (e_start_sexp(), e_start_sexp(), e_end_sexp())),
-    _incomplete(b'{foo:{}', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
-    _incomplete(b'{foo:bar', (e_start_struct(),)),
-    _incomplete(b'{foo:bar::', (e_start_struct(),)),
-    _incomplete(b'{foo:bar,', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
-    _incomplete(b'[[],', (e_start_list(), e_start_list(), e_end_list())),
-    _incomplete(b'{foo:{},', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
-    _incomplete(b'foo'),  # Might be an annotation.
-    _incomplete(b'\'foo\''),  # Might be an annotation.
-    _incomplete(b'\'\'\'foo\'\'\'/**/'),  # Might be followed by another triple-quoted string.
-    _incomplete(b'123'),  # Might have more digits.
-    _incomplete(b'-'),
-    _incomplete(b'1.2'),
-    _incomplete(b'1.2e'),
-    _incomplete(b'1.2e-'),
-    _incomplete(b'1.2d'),
-    _incomplete(b'1.2d3'),
-    _incomplete(b'1_'),
-    _incomplete(b'0b'),
-    _incomplete(b'0x'),
-    _incomplete(b'2000-01'),
-    _incomplete(b'"abc'),
-    _incomplete(b'false'),  # Might be a symbol with more characters.
-    _incomplete(b'null.string'),  # Might be a symbol with more characters.
-    _incomplete(b'/*'),
-    _incomplete(b'//'),
-    _incomplete(b'foo:'),
-    _incomplete(b'foo::'),
-    _incomplete(b'foo::bar'),
-    _incomplete(b'foo//\n'),
-    _incomplete(b'{foo', (e_start_struct(),)),
-    _incomplete(b'{{'),
-    _incomplete(b'{{"'),
-    _incomplete(b'(foo-', (e_start_sexp(), e_symbol(value=b'foo'))),
-    _incomplete(b'(-foo', (e_start_sexp(), e_symbol(value=b'-'))),
-)
+def _params(event_func, data_event_pairs):
+    @listify
+    def generate_params():
+        for pair in data_event_pairs:
+            elems = len(pair)
+            assert 1 <= elems <= 2  # data, tuple of events
+            events = elems == 2 and pair[1] or ()
+            yield event_func(pair[0], events)
+    return generate_params()
+
+_BAD = _params(_ion_exception, (
+    (b'+1',),
+    (b'01',),
+    (b'1.23.4',),
+    (b'1__0',),
+    (b'1_e1',),
+    (b'1e_1',),
+    (b'1e1_',),
+    (b'1._0',),
+    (b'1_.0',),
+    (b'-_1',),
+    (b'1_',),
+    (b'0_x1',),
+    (b'0b_1',),
+    (b'null.strings',),
+    (b'200T',),
+    (b'2000-01',),
+    (b'2007-02-23T20:14:33.Z',),
+    (b'1a',),
+    # (b'{{/**/}}',),  # TODO these are all lexed as blobs. Once base64 parsing is included, they will fail
+    # (b'{{//\n}}',),
+    # (b'{{/**/"abc"}}',),
+    (b'{{"abc"//\n}}',),
+    (b'{{\'\'\'abc\'\'\'//\n\'\'\'def\'\'\'}}',),
+    (b'{{ abcd} }',),
+    (b'{ {abcd}}', (e_start_struct(),)),
+    (b'{foo:bar/**/baz:zar}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
+    (b'[abc 123]', (e_start_list(), e_symbol(value=b'abc'))),
+    (b'{foo::bar:baz}', (e_start_struct(),)),
+    (b'[abc, , 123]', (e_start_list(), e_symbol(value=b'abc'))),
+    (b'{foo:bar, ,}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'),)),
+    (b'(1.23.)', (e_start_sexp(), ))
+))
+
+_INCOMPLETE = _params(_incomplete, (
+    (b'{',),  # Might be a lob.
+    (b'{ ', (e_start_struct(),)),
+    (b'[', (e_start_list(),)),
+    (b'(', (e_start_sexp(),)),
+    (b'[[]', (e_start_list(), e_start_list(), e_end_list())),
+    (b'(()', (e_start_sexp(), e_start_sexp(), e_end_sexp())),
+    (b'{foo:{}', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
+    (b'{foo:bar', (e_start_struct(),)),
+    (b'{foo:bar::', (e_start_struct(),)),
+    (b'{foo:bar,', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
+    (b'[[],', (e_start_list(), e_start_list(), e_end_list())),
+    (b'{foo:{},', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
+    (b'foo',),  # Might be an annotation.
+    (b'\'foo\'',),  # Might be an annotation.
+    (b'\'\'\'foo\'\'\'/**/',),  # Might be followed by another triple-quoted string.
+    (b'123',),  # Might have more digits.
+    (b'-',),
+    (b'1.2',),
+    (b'1.2e',),
+    (b'1.2e-',),
+    (b'1.2d',),
+    (b'1.2d3',),
+    (b'1_',),
+    (b'0b',),
+    (b'0x',),
+    (b'2000-01',),
+    (b'"abc',),
+    (b'false',),  # Might be a symbol with more characters.
+    (b'null.string',),  # Might be a symbol with more characters.
+    (b'/*',),
+    (b'//',),
+    (b'foo:',),
+    (b'foo::',),
+    (b'foo::bar',),
+    (b'foo//\n',),
+    (b'{foo', (e_start_struct(),)),
+    (b'{{',),
+    (b'{{"',),
+    (b'(foo-', (e_start_sexp(), e_symbol(value=b'foo'))),
+    (b'(-foo', (e_start_sexp(), e_symbol(value=b'-'))),
+))
+
+
+def _good_sexp(*events):
+    return (e_start_sexp(),) + events + (e_end_sexp(),)
+
+
+def _good_struct(*events):
+    return (e_start_struct(),) + events + (e_end_struct(),)
+
+
+def _good_list(*events):
+    return (e_start_list(),) + events + (e_end_list(),)
+
+
+_GOOD = _params(_good, (
+    (b'{/**/}', _good_struct()),
+    (b'(/**/)', _good_sexp()),
+    (b'[/**/]', _good_list()),
+    (b'{//\n}', _good_struct()),
+    (b'(//\n)', _good_sexp()),
+    (b'[//\n]', _good_list()),
+    (b'{/**///\n}', _good_struct()),
+    (b'(/**///\n)', _good_sexp()),
+    (b'[/**///\n]', _good_list()),
+    (b'/*foo*///bar\n/*baz*/',),
+    (b'{foo:zar::[], bar: (), baz:{}}',
+        _good_struct(
+            e_start_list(field_name=b'foo', annotations=(b'zar',)), e_end_list(),
+            e_start_sexp(field_name=b'bar'), e_end_sexp(),
+            e_start_struct(field_name=b'baz'), e_end_struct()
+        )
+     ),
+    (b'[[], zar::{}, ()]',
+        _good_list(
+            e_start_list(), e_end_list(),
+            e_start_struct(annotations=(b'zar',)), e_end_struct(),
+            e_start_sexp(), e_end_sexp(),
+        )
+     ),
+))
+
+
+_UNSPACED_SEXPS = _params(_good, (
+    (b'(foo //bar\n::baz)', _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',)))),
+    (b'(foo/*bar*/ ::baz)', _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',)))),
+    (b'(\'a b\' //\n::cd)', _good_sexp(e_symbol(value=b'cd', annotations=(b'a b',)))),
+    (b'(abc//baz\n-)', _good_sexp(e_symbol(b'abc'), e_symbol(b'-'))),
+    (b'(null-100/**/)', _good_sexp(e_null(), e_int(b'-100'))),
+    (b'(//\nnull//\n)', _good_sexp(e_null())),
+    (b'(abc/*baz*/123)', _good_sexp(e_symbol(b'abc'), e_int(b'123'))),
+    (b'(abc/*baz*/-)', _good_sexp(e_symbol(b'abc'), e_symbol(b'-'))),
+    (b'(abc//baz\n123)', _good_sexp(e_symbol(b'abc'), e_int(b'123'))),
+    (b'(foo%+null-//\n)', _good_sexp(e_symbol(b'foo'), e_symbol(b'%+'), e_null(), e_symbol(b'-//'))),  # Matches java.
+    (b'(null-100)', _good_sexp(e_null(), e_int(b'-100'))),
+    (b'(null.string.b)', _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b'))),
+    (b'(-100)', _good_sexp(e_int(b'-100'))),
+    (b'(-1.23 .)', _good_sexp(e_decimal(b'-1.23'), e_symbol(b'.'))),
+    (b'(nul)', _good_sexp(e_symbol(b'nul'))),
+    (b'(foo::%-bar)', _good_sexp(e_symbol(value=b'%-', annotations=(b'foo',)), e_symbol(b'bar'))),
+    (b'(true.False+)', _good_sexp(e_bool(True), e_symbol(b'.'), e_symbol(b'False'), e_symbol(b'+'))),
+    (b'(false)', _good_sexp(e_bool(False))),
+    (b'({}()zar::[])',
+        _good_sexp(
+            e_start_struct(), e_end_struct(),
+            e_start_sexp(), e_end_sexp(),
+            e_start_list(annotations=(b'zar',)), e_end_list()
+        )
+     ),
+))
 
 
 # TODO containers within containers
 # TODO sexps without space delimiters
 
 @parametrize(*chain(
+    _GOOD,
     _BAD,
     _INCOMPLETE,
+    _UNSPACED_SEXPS,
     _top_level_value_params(),  # all top-level values as individual data events, space-delimited
     _all_top_level_as_one_stream_params(),  # all top-level values as one data event, space-delimited
     _all_top_level_as_one_stream_params(b'/*foo*/'),  # all top-level values as one data event, block comment delimited
