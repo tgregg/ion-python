@@ -229,7 +229,8 @@ _TEST_SYMBOLS = (
         b'foo ',
         b'\'a b\' ',
         b'foo/*bar*/',
-        b'\'a b\' //bar\n'
+        b'\'a b\' //bar\n',
+        b'\'\'',
     ),
     (
         b'foo',
@@ -239,6 +240,7 @@ _TEST_SYMBOLS = (
         b'a b',
         b'foo',
         b'a b',
+        b'',
     )
 )
 
@@ -460,6 +462,7 @@ _GOOD = _params(_good, (
     (b'(/**///\n)', _good_sexp()),
     (b'[/**///\n]', _good_list()),
     (b'/*foo*///bar\n/*baz*/',),
+    (b'\'\'::123 ', (e_int(value=b'123', annotations=(b'',)),)),
     (b'{foo:zar::[], bar: (), baz:{}}',
         _good_struct(
             e_start_list(field_name=b'foo', annotations=(b'zar',)), e_end_list(),
@@ -474,6 +477,7 @@ _GOOD = _params(_good, (
             e_start_sexp(), e_end_sexp(),
         )
      ),
+    (b'{\'\':bar,}', _good_struct(e_symbol(field_name=b'', value=b'bar'))),
 ))
 
 
@@ -507,7 +511,6 @@ _UNSPACED_SEXPS = _params(_good, (
 
 
 # TODO containers within containers
-# TODO sexps without space delimiters
 
 @parametrize(*chain(
     _GOOD,
