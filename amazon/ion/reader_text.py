@@ -380,9 +380,13 @@ def string_handler(c, ctx, is_field_name=False):
     # TODO parse unicode escapes (in parser)
     assert c == ord('"')
     is_clob = ctx.ion_type is IonType.CLOB
-    if not is_clob:
+    if not is_clob and not is_field_name:
         ctx = ctx.derive_ion_type(IonType.STRING)
     val = ctx.value
+    if is_field_name:
+        assert not val
+        ctx = ctx.derive_pending_symbol()
+        val = ctx.pending_symbol
     prev = c
     c, self = yield
     trans = (Transition(None, self), None)
@@ -397,7 +401,6 @@ def string_handler(c, ctx, is_field_name=False):
         prev = c
         c, _ = yield trans
     if is_field_name:
-        ctx = ctx.derive_field_name(val)
         yield ctx.immediate_transition(ctx.whence)
     elif not is_clob:
         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
@@ -494,7 +497,7 @@ def triple_quote_string_handler(c, ctx):
 @coroutine
 def string_or_symbol_handler(c, ctx, is_field_name=False):
     assert c == ord('\'')
-    ctx = ctx.derive_ion_type(IonType.SYMBOL)
+    #ctx = ctx.derive_ion_type(IonType.SYMBOL)
     c, self = yield
     if c == ord('\''):
         yield ctx.immediate_transition(two_single_quotes_handler(c, ctx, is_field_name))
@@ -512,21 +515,8 @@ def two_single_quotes_handler(c, ctx, is_field_name):
         yield ctx.immediate_transition(triple_quote_string_handler(c, ctx))
     else:
         # This is the empty symbol
-        if c == ord(':'):
-            # This is not a value -- it's either an annotation or a field name.
-            if not is_field_name:
-                c, _ = yield ctx.immediate_transition(self)
-                if c == ord(':'):
-                    ctx = ctx.derive_annotation(ctx.value)
-                else:
-                    raise IonException("Illegal character : after symbol")
-            else:
-                ctx = ctx.derive_field_name(ctx.value)
-            yield ctx.immediate_transition(ctx.whence)
-        else:
-            assert ctx.ion_type == IonType.SYMBOL
-            assert len(ctx.value) == 0
-            yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+        ctx = ctx.derive_pending_symbol()
+        yield ctx.immediate_transition(ctx.whence)
 
 
 class NullSequence:
@@ -694,13 +684,12 @@ def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
             val.append(c)
             match_index += 1
         else:
-            ctx = ctx.derive_ion_type(IonType.SYMBOL)
             if c in _WHITESPACE or c == ord('/') or c == ord(':'):
-                if is_field_name:
-                    ctx = ctx.derive_field_name(val)
-                # This might be an annotation
+                # This might be an annotation or a field name
+                ctx = ctx.derive_pending_symbol(val)
                 trans = ctx.immediate_transition(ctx.whence)
             elif c in ctx.container.end_sequence or c in ctx.container.delimiter or (in_sexp and c in _OPERATORS):
+                ctx = ctx.derive_ion_type(IonType.SYMBOL)
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val)
             else:
                 trans = ctx.immediate_transition(symbol_handler(c, ctx, is_field_name=is_field_name))
@@ -715,6 +704,7 @@ def sexp_hyphen_handler(c, ctx):
     yield
     if ctx.container.ion_type is not IonType.SEXP:
         raise IonException("Illegal character following -")  # TODO
+    ctx = ctx.derive_ion_type(IonType.SYMBOL)
     if c in _OPERATORS:
         yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
     else:
@@ -752,13 +742,12 @@ def quoted_symbol_handler(c, ctx, is_field_name):
             val.append(c)
         prev = c
         c, _ = yield trans
-    if is_field_name:
-        ctx = ctx.derive_field_name(val)
-        yield ctx.immediate_transition(ctx.whence)
-    elif c in _WHITESPACE or c == ord('/') or c == ord(':'):
-        # This might be an annotation.
+    if is_field_name or c in _WHITESPACE or c == ord('/') or c == ord(':'):
+        # This might be an annotation or a field name.
+        ctx = ctx.derive_pending_symbol(val)
         yield ctx.immediate_transition(ctx.whence)
     else:
+        ctx = ctx.derive_ion_type(IonType.SYMBOL)
         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
 
 
@@ -772,7 +761,6 @@ _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
 def symbol_handler(c, ctx, is_field_name=False):
     assert c in _IDENTIFIER_CHARACTERS
     in_sexp = ctx.container.ion_type is IonType.SEXP
-    ctx = ctx.derive_ion_type(IonType.SYMBOL)
     val = ctx.value
     val.append(c)
     prev = c
@@ -787,13 +775,12 @@ def symbol_handler(c, ctx, is_field_name=False):
             val.append(c)
         prev = c
         c, _ = yield trans
-    if is_field_name:
-        ctx = ctx.derive_field_name(val)
-        yield ctx.immediate_transition(ctx.whence)
-    elif c in _WHITESPACE or c == ord('/') or c == ord(':'):
-        # This might be an annotation.
+    if is_field_name or c in _WHITESPACE or c == ord('/') or c == ord(':'):
+        # This might be an annotation or a field name.
+        ctx = ctx.derive_pending_symbol(val)
         yield ctx.immediate_transition(ctx.whence)
     else:
+        ctx = ctx.derive_ion_type(IonType.SYMBOL)
         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
 
 
@@ -1033,7 +1020,7 @@ _C_SEXP = _Container((ord(')'),), (), IonType.SEXP)
 
 
 class _HandlerContext(record(
-    'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type'
+    'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type', 'pending_symbol'
 )):
     """TODO
     """
@@ -1090,19 +1077,21 @@ class _HandlerContext(record(
             self.depth + add_depth,
             whence,
             None,  # containers don't have a value
-            ion_type
+            ion_type,
+            None
         )
 
-    def derive_child_context(self, field_name, annotations, whence, value, ion_type):
+    def derive_child_context(self, whence):
         return _HandlerContext(
             self.container,
             self.queue,
-            field_name,
-            annotations,
+            None,
+            None,
             self.depth,
             whence,
-            value,
-            ion_type
+            bytearray(),  # children start without a value
+            None,
+            None
         )
 
     def derive_ion_type(self, ion_type):
@@ -1114,31 +1103,52 @@ class _HandlerContext(record(
             self.depth,
             self.whence,
             self.value,
-            ion_type
+            ion_type,
+            self.pending_symbol
         )
 
-    def derive_annotation(self, annotation):
+    def derive_annotation(self):
+        assert self.pending_symbol is not None
+        assert not self.value
+        annotations = (self.pending_symbol, )  # pending_symbol becomes an annotation
         return _HandlerContext(
             self.container,
             self.queue,
             self.field_name,
-            self.annotations and self.annotations + (annotation, ) or (annotation, ),
+            self.annotations and self.annotations + annotations or annotations,
             self.depth,
             self.whence,
-            bytearray(),
-            None
+            self.value,
+            None,
+            None  # reset pending symbol
         )
 
-    def derive_field_name(self, field_name):
+    def derive_field_name(self):
+        assert self.pending_symbol is not None
+        assert not self.value
         return _HandlerContext(
             self.container,
             self.queue,
-            field_name,
+            self.pending_symbol,  # pending_symbol becomes field name
             self.annotations,
             self.depth,
             self.whence,
-            bytearray(),
-            self.ion_type
+            self.value,
+            self.ion_type,
+            None  # reset pending symbol
+        )
+
+    def derive_pending_symbol(self, pending_symbol=bytearray()):
+        return _HandlerContext(
+            self.container,
+            self.queue,
+            self.field_name,
+            self.annotations,
+            self.depth,
+            self.whence,
+            bytearray(),  # reset value
+            self.ion_type,
+            pending_symbol
         )
 
 
@@ -1175,23 +1185,28 @@ def _container_handler(c, ctx):
     _, self = (yield None)
     queue = ctx.queue
     child_context = None
-    is_field_name = True
+    is_field_name = ctx.ion_type is IonType.STRUCT
     delimiter_required = False
-    maybe_annotation = False
+    complete = ctx.depth == 0
     while True:
         if c in ctx.container.end_sequence:
-            if child_context and child_context.ion_type is IonType.SYMBOL:
-                yield child_context.event_transition(IonEvent, IonEventType.SCALAR, child_context.ion_type, child_context.value)[0]
-            # We are at the end of the container.
+            if child_context and child_context.pending_symbol is not None:
+                assert not child_context.value
+                yield child_context.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol)[0]
             # Yield the close event and go to enclosing container.
             yield Transition(
                 IonEvent(IonEventType.CONTAINER_END, ctx.ion_type, depth=ctx.depth-1),
                 ctx.whence
             )
         if c in ctx.container.delimiter:
+            if child_context and child_context.pending_symbol is not None:
+                assert not child_context.value
+                yield child_context.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol)[0]
+                child_context = None
+                delimiter_required = True
             if not delimiter_required:
                 raise IonException('Encountered delimiter %s without preceding value.' % (chr(ctx.container.delimiter[0])))
-            is_field_name = True
+            is_field_name = ctx.ion_type is IonType.STRUCT
             delimiter_required = False
             c = None
         if c is not None and c not in _WHITESPACE:
@@ -1199,7 +1214,7 @@ def _container_handler(c, ctx):
                 if child_context is None:
                     # TODO duplicated in a branch below
                     # This is the start of a new child value.
-                    child_context = ctx.derive_child_context(None, None, self, bytearray(), None)
+                    child_context = ctx.derive_child_context(self)
                 if ctx.ion_type is IonType.SEXP:
                     handler = sexp_slash_handler(c, child_context)
                 else:
@@ -1208,38 +1223,41 @@ def _container_handler(c, ctx):
                 # This is not the delimiter, or whitespace, or the start of a comment. Throw.
                 raise IonException("Delimiter %s not found after value within %s." % (
                     chr(ctx.container.delimiter[0]), ctx.container.ion_type.name))
-            elif c == ord(':') and is_field_name and ctx.ion_type is IonType.STRUCT:
-                is_field_name = False
-                c = None
-                continue
             else:
-                if child_context is not None and child_context.value and child_context.ion_type is IonType.SYMBOL:
+                if child_context and child_context.pending_symbol is not None:
+                    # A character besides whitespace, comments, and delimiters has been found, and there is a pending
+                    # symbol. That pending symbol is either an annotation, a field name, or a symbol value.
                     if c == ord(':'):
-                        # Note: field name covered in a previous branch, so not seeing another : here is definitely
-                        # an error.
+                        if is_field_name:
+                            is_field_name = False
+                            child_context = child_context.derive_field_name()
+                            c = None
+                            continue
                         if len(queue) == 0:
                             yield Transition(None, _read_data_handler(self, ctx))
                         peek = queue.read_byte()
                         if peek == ord(':'):
-                            child_context = child_context.derive_annotation(child_context.value)
+                            child_context = child_context.derive_annotation()
                             c = None  # forces another character to be read safely
                             continue
                         else:
                             raise IonException("Illegal character : in symbol")
                     else:
-                        yield child_context.event_transition(IonEvent, IonEventType.SCALAR, child_context.ion_type,
-                                                             child_context.value)[0]
-                        maybe_annotation = False
+                        # TODO when is this hit? Investigate. Is it legal?
+                        # It's a symbol value
+                        yield child_context.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL,
+                                                             child_context.pending_symbol)[0]
                         child_context = None
                 if child_context is None or (not child_context.annotations and child_context.field_name is None):
                     # This is the start of a new child value.
-                    child_context = ctx.derive_child_context(None, None, self, bytearray(), None)
-                if is_field_name and ctx.ion_type is IonType.STRUCT:
+                    child_context = ctx.derive_child_context(self)
+                if is_field_name:
                     handler = field_name_handler(c, child_context)
                 else:
                     handler = _START_TABLE[c](c, child_context)  # Initialize the new handler
             container_start = c == ord(b'[') or c == ord(b'(')  # Note: '{' not here because that might be a lob
             read_next = True
+            complete = False
             while True:
                 if not container_start:
                     if len(queue) == 0:
@@ -1253,8 +1271,8 @@ def _container_handler(c, ctx):
                     # This child value is finished. c is now the first character in the next value or sequence.
                     # Hence, a new character should not be read; it should be provided to the handler for the next
                     # child context.
+                    assert child_context is None
                     yield trans
-                    maybe_annotation = False
                     if trans.event.ion_type.is_container and trans.event.event_type is not IonEventType.SCALAR:
                         yield Transition(
                             None,
@@ -1266,20 +1284,25 @@ def _container_handler(c, ctx):
                             read_next = False
                     else:
                         read_next = False
+
+                    complete = ctx.depth == 0
                     delimiter_required = not ((not ctx.container.ion_type) or ctx.container.ion_type is IonType.SEXP)
                     break
                 else:
                     if self is trans.delegate:
                         in_comment = isinstance(trans, _CommentTransition)
-                        if is_field_name and ctx.ion_type is IonType.STRUCT:
-                            if c == ord(':'):
-                                is_field_name = False
-                            elif not (c == ord('/') and in_comment):
+                        if is_field_name:
+                            if c == ord(':') or not (c == ord('/') and in_comment):
+                                read_next = False
                                 break
-                        elif child_context and child_context.ion_type is IonType.SYMBOL:
-                            maybe_annotation = True
-                            if not in_comment:
+                        elif child_context and child_context.pending_symbol is not None:
+                            if not in_comment:  # TODO check -- closing slash as above?
+                                read_next = False
                                 break
+                        elif in_comment:
+                            # There isn't a pending field name or pending annotations. If this is at the top level,
+                            # it may end the stream.
+                            complete = ctx.depth == 0
                         # This happens at the end of a comment within this container, or when an annotation has been
                         # found. In both cases, an event should not be emitted. Read the next character and continue.
                         if len(queue) > 0:
@@ -1295,7 +1318,7 @@ def _container_handler(c, ctx):
         elif len(queue) > 0:
             c = queue.read_byte()
         else:
-            if ctx.depth == 0 and not maybe_annotation:
+            if complete:
                 yield Transition(None, _read_data_handler(self, ctx, ION_STREAM_END_EVENT))
             else:
                 yield Transition(None, _read_data_handler(self, ctx))
@@ -1331,6 +1354,7 @@ def reader(queue=None):
         depth=0,
         whence=None,
         value=None,
-        ion_type=None  # Top level
+        ion_type=None,  # Top level
+        pending_symbol=None
     )
     return reader_trampoline(_container_handler(None, ctx))
