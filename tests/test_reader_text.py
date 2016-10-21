@@ -22,6 +22,7 @@ from itertools import chain
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
 from amazon.ion.reader_text import reader
+from amazon.ion.util import coroutine
 from tests import listify, parametrize
 from tests.event_aliases import *
 from tests.reader_util import ReaderParameter, reader_scaffold
@@ -29,8 +30,7 @@ from tests.reader_util import ReaderParameter, reader_scaffold
 _b = bytearray
 _P = ReaderParameter
 
-# This is an encoding of a single top-level value and the expected events with ``NEXT``.
-_TOP_LEVEL_VALUES = (
+_SCALARS = (
     (b'null', e_null()),
 
     (b'false', e_bool(False)),
@@ -93,9 +93,14 @@ _TOP_LEVEL_VALUES = (
     (b'0000-01-01T00:00:00Z', e_timestamp(_b(b'0000-01-01T00:00:00Z'))),
 
     (b'null.symbol', e_symbol()),
+    (b'nul', e_symbol(_b(b'nul'))),  # See the logic in the event generators that forces these to emit an event.
+    (b'$foo', e_symbol(_b(b'$foo'))),
+    (b'\'a b\'', e_symbol(_b(b'a b'))),
+    (b'\'\'', e_symbol(_b(b''))),
 
     (b'null.string', e_string()),
     (b'" "', e_string(_b(b' '))),
+    (b'\'\'\'foo\'\'\' \'\'\'\'\'\' \'\'\'""\'\'\'', e_string(_b(b'foo""'))),
     # TODO escape sequences
 
     (b'null.clob', e_clob()),
@@ -116,102 +121,101 @@ _TOP_LEVEL_VALUES = (
     (b'null.sexp', e_null_sexp()),
 
     (b'null.struct', e_null_struct()),
-
-    # TODO standalone comments (probably can't go here because of annotations test)
 )
 
-_MULTI_EVENT_TOP_LEVEL_VALUES = (
-    # TODO inputs with multiple output events don't work with the containerizer scaffold
-    (b'nul 0', e_symbol(_b(b'nul')), e_int(_b(b'0'))),  # Ending with a symbol yields incomplete. This forces end.
-    (b'$foo 0', e_symbol(_b(b'$foo')), e_int(_b(b'0'))),
-    (b'\'a b\' 0', e_symbol(_b(b'a b')), e_int(_b(b'0'))),
-    (b'\'\' 0', e_symbol(_b(b'')), e_int(_b(b'0'))),
 
-
-    (b'\'\'\'foo\'\'\' \'\'\'\'\'\' \'\'\'""\'\'\' 0', e_string(_b(b'foo""')), e_int(_b(b'0'))),
-
-    (b'[]', e_start_list(), e_end_list()),
-
-    (b'()', e_start_sexp(), e_end_sexp()),
-
-    (b'{}', e_start_struct(), e_end_struct()),
-)
-
-_ALL_TOP_LEVEL_VALUES = _TOP_LEVEL_VALUES + _MULTI_EVENT_TOP_LEVEL_VALUES
-
-
-def _top_level_event_pairs(data, events, postpend):
+def _scalar_event_pairs(data, events, delimiter):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     first = True
+    space_delimited = not (b',' in delimiter)
     for event in events:
         input_event = NEXT
         if first:
-            input_event = e_read(data + postpend)  # TODO added this postpending of space to get complete data events
+            input_event = e_read(data + delimiter)
+            if space_delimited and event.value is not None \
+                and ((event.ion_type is IonType.SYMBOL) or
+                     (event.ion_type is IonType.STRING and b'"' != data[0])):  # triple-quoted strings
+                # Because annotations and field names are symbols, a space delimiter after a symbol isn't enough to
+                # generate a symbol event. Similarly, triple-quoted strings may be followed by another triple-quoted
+                # string if only delimited by whitespace or comments. To address this issue, these types
+                # are delimited in these tests by another value - in this case, int 0 (but it could be anything).
+                yield input_event, INC
+                yield e_read(b'0' + delimiter), event
+                input_event, event = (NEXT, e_int(b'0'))
             first = False
         yield input_event, event
 
 
-def _top_level_iter(postpend=b' '):
+def _scalar_iter(delimiter, values=_SCALARS):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
-    for seq in _TOP_LEVEL_VALUES:
+    for seq in values:
         data = seq[0]
-        event_pairs = list(_top_level_event_pairs(data, seq[1:], postpend))
+        event_pairs = list(_scalar_event_pairs(data, seq[1:], delimiter))
         yield data, event_pairs
 
 
-# TODO how to consolidate this pythonically with the previous method?
-def _all_top_level_iter(postpend):
-    # TODO duplicated in test_reader_binary -- consolidate in reader_util
-    for seq in _ALL_TOP_LEVEL_VALUES:
-        data = seq[0]
-        event_pairs = list(_top_level_event_pairs(data, seq[1:], postpend))
-        yield data, event_pairs
+@coroutine
+def _scalar_params():
+    while True:
+        delimiter = yield
+        for data, event_pairs in _scalar_iter(delimiter):
+            yield _P(
+                desc=data,
+                event_pairs=event_pairs + [(NEXT, INC)]
+            )
 
 
-def _scalar_params(delimiter=b''):
-    for data, event_pairs in _top_level_iter(delimiter):
-        yield _P(
-            desc=data,
-            event_pairs=event_pairs + [(NEXT, INC)]
-        )
-
-
-def _top_level_value_params(postpend=b' '):
+def _top_level_value_params(delimiter=b' '):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     """Converts the top-level tuple list into parameters with appropriate ``NEXT`` inputs.
 
     The expectation is starting from an end of stream top-level context.
     """
-    for data, event_pairs in _all_top_level_iter(postpend):
+    for data, event_pairs in _scalar_iter(delimiter):
         _, first = event_pairs[0]
+        if first.event_type is IonEventType.INCOMPLETE:  # Happens with space-delimited symbol values.
+            _, first = event_pairs[1]
         yield _P(
             desc='TL %s - %s - %r' % \
-                 (first.event_type.name, first.ion_type.name, first.value),
+                 (first.event_type.name, first.ion_type.name, data),
             event_pairs=[(NEXT, END)] + event_pairs + [(NEXT, END)],
         )
 
 
-def _all_scalars_in_one_container_params(delimiter):
+@coroutine
+def _all_scalars_in_one_container_params():
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
-    @listify
-    def generate_event_pairs():
-        for data, event_pairs in _top_level_iter(delimiter):
-            for event_pair in event_pairs:
-                yield event_pair
-                yield (NEXT, INC)
+    while True:
+        delimiter = yield
 
-    yield _P(
-        desc='ALL',
-        event_pairs=generate_event_pairs()
-    )
+        @listify
+        def generate_event_pairs():
+            for data, event_pairs in _scalar_iter(delimiter):
+                pairs = ((i, o) for i, o in event_pairs)
+                while True:
+                    try:
+                        input_event, output_event = pairs.next()
+                        yield input_event, output_event
+                        if output_event is INC:
+                            # This is a symbol value.
+                            yield pairs.next()  # Input: a scalar. Output: the symbol value's event.
+                            yield pairs.next()  # Input: NEXT. Output: the previous scalar's event.
+                        yield (NEXT, INC)
+                    except StopIteration:
+                        break
+
+        yield _P(
+            desc='ALL',
+            event_pairs=generate_event_pairs()
+        )
 
 
-def _all_top_level_as_one_stream_params(postpend=b' '):
+def _all_top_level_as_one_stream_params(delimiter=b' '):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     @listify
     def generate_event_pairs():
         yield (NEXT, END)
-        for data, event_pairs in _all_top_level_iter(postpend):
+        for data, event_pairs in _scalar_iter(delimiter):
             for event_pair in event_pairs:
                 yield event_pair
             yield (NEXT, END)
@@ -220,6 +224,17 @@ def _all_top_level_as_one_stream_params(postpend=b' '):
         desc='TOP LEVEL ALL',
         event_pairs=generate_event_pairs()
     )
+
+
+def _collect_params(param_generator, delimiter):
+    """Collect all output of the given coroutine into a single list."""
+    params = []
+    while True:
+        param = param_generator.send(delimiter)
+        if param is None:
+            return params
+        params.append(param)
+
 
 _TEST_SYMBOLS = (
     (
@@ -245,36 +260,60 @@ _TEST_SYMBOLS = (
 )
 
 
+def _generate_annotations():
+    assert len(_TEST_SYMBOLS[0]) == len(_TEST_SYMBOLS[1])
+    i = 1
+    num_symbols = len(_TEST_SYMBOLS[0])
+    while True:
+        yield _TEST_SYMBOLS[0][0:i], _TEST_SYMBOLS[1][0:i]
+        i += 1
+        if i == num_symbols:
+            i = 0
+
+
+_annotations_generator = _generate_annotations()
+
+
+@coroutine
 def _annotate_params(params):
     """Adds annotation wrappers for a given iterator of parameters,
 
     The requirement is that the given parameters completely encapsulate a single value.
     """
-    assert len(_TEST_SYMBOLS[0]) == len(_TEST_SYMBOLS[1])
-    params_list = list(params)
-    for i in range(1, len(_TEST_SYMBOLS[0]) + 1):
-        test_annotations = _TEST_SYMBOLS[0][0:i]
-        expected_annotations = _TEST_SYMBOLS[1][0:i]
+
+    while True:
+        delimiter = yield
+        params_list = _collect_params(params, delimiter)
+        test_annotations, expected_annotations = _annotations_generator.next()
         for param in params_list:
             @listify
             def annotated():
-                for input_event, output_event in param.event_pairs:
-                    if input_event.type is ReadEventType.DATA:
-                        data = b''
-                        for test_annotation in test_annotations:
-                            data += test_annotation + b'::'
-                        data += input_event.data
-                        input_event = read_data_event(data)
-                        output_event = output_event.derive_annotations(expected_annotations)
-                    yield input_event, output_event
+                pairs = ((i, o) for i, o in param.event_pairs)
+                while True:
+                    try:
+                        input_event, output_event = pairs.next()
+                        if input_event.type is ReadEventType.DATA:
+                            data = b''
+                            for test_annotation in test_annotations:
+                                data += test_annotation + b'::'
+                            data += input_event.data
+                            input_event = read_data_event(data)
+                            if output_event is INC:
+                                yield input_event, output_event
+                                input_event, output_event = pairs.next()
+                            output_event = output_event.derive_annotations(expected_annotations)
+                        yield input_event, output_event
+                    except StopIteration:
+                        break
 
             yield _P(
-                desc='ANN %s' % param.desc,
+                desc='ANN %r on %s' % (expected_annotations, param.desc),
                 event_pairs=annotated(),
             )
 
 
 def _generate_field_name():
+    assert len(_TEST_SYMBOLS[0]) == len(_TEST_SYMBOLS[1])
     i = 0
     num_symbols = len(_TEST_SYMBOLS[0])
     while True:
@@ -284,62 +323,74 @@ def _generate_field_name():
             i = 0
 
 
-def _containerize_params(nested_params, with_skip=True):
+_field_name_generator = _generate_field_name()
+
+
+@coroutine
+def _containerize_params(param_generator, with_skip=True, depth=0):
     """Adds container wrappers for a given iteration of parameters.
 
     The requirement is that each parameter is a self-contained single value.
     """
     # TODO skipping
-    name_generator = _generate_field_name()
-    for info in ((IonType.LIST, b'[', b']', b','),
-                 (IonType.SEXP, b'(', b')', b' '),  # TODO sexps without space delimiters are tested separately
-                 (IonType.STRUCT, b'{ ', b'}', b','),
-                 (IonType.LIST, b'[/**/', b'//\n]', b'//\n,'),
-                 (IonType.SEXP, b'(//\n', b'/**/)', b'/**/'),  # TODO sexps without space delimiters are tested separately
-                 (IonType.STRUCT, b'{/**/', b'//\n}', b'/**/,')):  # space after opening bracket for instant start_container event
-        ion_type = info[0]
-        param_generator = None
-        for nested_param in nested_params:
-            if param_generator is None:
-                param_generator = nested_param(info[3])
-            else:
-                param_generator = nested_param(param_generator)
-        params_list = list(param_generator)
-        for param in params_list:
-            @listify
-            def add_field_names(event_pairs):
-                for read_event, ion_event in event_pairs:
-                    if read_event.type is ReadEventType.DATA:
-                        field_name, expected_field_name = name_generator.next()
-                        data = field_name + b':' + read_event.data
-                        read_event = read_data_event(data)
-                        ion_event = ion_event.derive_field_name(expected_field_name)
-                    yield read_event, ion_event
+    while True:
+        yield
+        for info in ((IonType.LIST, b'[', b']', b','),
+                     (IonType.SEXP, b'(', b')', b' '),  # TODO sexps without space delimiters are tested separately
+                     (IonType.STRUCT, b'{ ', b'}', b','),
+                     (IonType.LIST, b'[/**/', b'//\n]', b'//\n,'),
+                     (IonType.SEXP, b'(//\n', b'/**/)', b'/**/'),  # TODO sexps without space delimiters are tested separately
+                     (IonType.STRUCT, b'{/**/', b'//\n}', b'/**/,')):  # space after opening bracket for instant start_container event
+            ion_type = info[0]
+            params = _collect_params(param_generator, info[3])
+            for param in params:
+                @listify
+                def add_field_names(event_pairs):
+                    container = False
+                    first = True
+                    for read_event, ion_event in event_pairs:
+                        if not container and read_event.type is ReadEventType.DATA:
+                            field_name, expected_field_name = _field_name_generator.next()
+                            data = field_name + b':' + read_event.data
+                            read_event = read_data_event(data)
+                            ion_event = ion_event.derive_field_name(expected_field_name)
+                        if first and ion_event.event_type is IonEventType.CONTAINER_START:
+                            # For containers within a struct--only the CONTAINER_START event gets adorned with a
+                            # field name
+                            container = True
+                        first = False
+                        yield read_event, ion_event
+                start = []
+                end = [(e_read(info[2]), e_end(ion_type))]
+                if depth == 0:
+                    start = [(NEXT, END)]
+                    end += [(NEXT, END)]
+                else:
+                    end += [(NEXT, INC)]
+                start += [
+                    (e_read(info[1]), e_start(ion_type)),
+                    (NEXT, INC)
+                ]
+                if ion_type is IonType.STRUCT:
+                    mid = add_field_names(param.event_pairs)
+                else:
+                    mid = param.event_pairs
+                desc = 'SINGLETON %s - %s' % (ion_type.name, param.desc)
+                yield _P(
+                    desc=desc,
+                    event_pairs=start + mid + end,
+                )
+        if depth == 0:
+            break
 
-            start = [
-                (NEXT, END),
-                (e_read(info[1]), e_start(ion_type)),
-                (NEXT, INC)
-            ]
-            if ion_type is IonType.STRUCT:
-                mid = add_field_names(param.event_pairs)
-            else:
-                mid = param.event_pairs
-            end = [(e_read(info[2]), e_end(ion_type)), (NEXT, END)]
-            desc = 'SINGLETON %s - %s' % (ion_type.name, param.desc)
-            yield _P(
-                desc=desc,
-                event_pairs=start + mid + end,
-            )
 
-
-def _expect_event(expected_event, postpend, desc, text, events=()):
+def _expect_event(expected_event, delimiter, desc, text, events=()):
     """Generates event pairs for a stream that ends in an expected event (or exception), given the text and the output
     events preceding the expected event.
     """
     events += (expected_event,)
     outputs = events[1:]
-    event_pairs = [(e_read(text + postpend), events[0])] + zip([NEXT]*len(outputs), outputs)
+    event_pairs = [(e_read(text + delimiter), events[0])] + zip([NEXT] * len(outputs), outputs)
     return _P(
         desc='%s %s' % (desc, text),
         event_pairs=[(NEXT, END)] + event_pairs
@@ -452,6 +503,9 @@ def _good_list(*events):
 
 
 _GOOD = _params(_good, (
+    (b'[]', _good_list()),
+    (b'()', _good_sexp()),
+    (b'{}', _good_struct()),
     (b'{/**/}', _good_struct()),
     (b'(/**/)', _good_sexp()),
     (b'[/**/]', _good_list()),
@@ -510,8 +564,6 @@ _UNSPACED_SEXPS = _params(_good, (
 ))
 
 
-# TODO containers within containers
-
 @parametrize(*chain(
     _GOOD,
     _BAD,
@@ -523,10 +575,11 @@ _UNSPACED_SEXPS = _params(_good, (
     _all_top_level_as_one_stream_params(b'//foo\n'),  # all top-level values as one data event, line comment delimited
     _annotate_params(_top_level_value_params()),  # all annotated top-level values, spaces postpended
     _annotate_params(_top_level_value_params(b'//foo\n/*bar*/')),  # all annotated top-level values, comments postpended
-    _containerize_params((_scalar_params,)),  # all values, each as the only value within a container
-    _containerize_params((_scalar_params, _annotate_params)),  # all values, each as the only value within a container
-    _containerize_params((_all_scalars_in_one_container_params,)),  # all values within a single container
-    _containerize_params((_all_scalars_in_one_container_params, _annotate_params)),  # all values annotated
+    _containerize_params(_scalar_params()),  # all values, each as the only value within a container
+    _containerize_params(_containerize_params(_scalar_params(), depth=1)),
+    _containerize_params(_annotate_params(_scalar_params())),  # all values, each as the only value within a container
+    _containerize_params(_all_scalars_in_one_container_params()),  # all values within a single container
+    _containerize_params(_annotate_params(_all_scalars_in_one_container_params())),  # annotated containers
 ))
 def test_raw_reader(p):
     reader_scaffold(reader(), p.event_pairs)
