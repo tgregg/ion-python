@@ -30,7 +30,154 @@ from tests.reader_util import ReaderParameter, reader_scaffold
 _b = bytearray
 _P = ReaderParameter
 
-_SCALARS = (
+_BAD = (
+    (b'+1',),
+    (b'01',),
+    (b'1.23.4',),
+    (b'1__0',),
+    (b'1_e1',),
+    (b'1e_1',),
+    (b'1e1_',),
+    (b'1._0',),
+    (b'1_.0',),
+    (b'-_1',),
+    (b'1_',),
+    (b'0_x1',),
+    (b'0b_1',),
+    (b'null.strings',),
+    (b'200T',),
+    (b'2000-01',),
+    (b'2007-02-23T20:14:33.Z',),
+    (b'1a',),
+    # (b'{{/**/}}',),  # TODO these are all lexed as blobs. Once base64 parsing is included, they will fail
+    # (b'{{//\n}}',),
+    # (b'{{/**/"abc"}}',),
+    (b'{{"abc"//\n}}',),
+    (b'{{\'\'\'abc\'\'\'//\n\'\'\'def\'\'\'}}',),
+    (b'{{ abcd} }',),
+    (b'{ {abcd}}', e_start_struct()),
+    (b'{foo:bar/**/baz:zar}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
+    (b'[abc 123]', e_start_list(), e_symbol(value=b'abc')),
+    (b'{foo::bar:baz}', e_start_struct()),
+    (b'[abc, , 123]', e_start_list(), e_symbol(value=b'abc')),
+    (b'{foo:bar, ,}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
+    (b'(1.23.)', e_start_sexp()),
+    (b'/ ',)
+)
+
+_INCOMPLETE = (
+    (b'{',),  # Might be a lob.
+    (b'{ ', e_start_struct()),
+    (b'[', e_start_list()),
+    (b'(', e_start_sexp()),
+    (b'[[]', e_start_list(), e_start_list(), e_end_list()),
+    (b'(()', e_start_sexp(), e_start_sexp(), e_end_sexp()),
+    (b'{foo:{}', e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct()),
+    (b'{foo:bar', e_start_struct(),),
+    (b'{foo:bar::', e_start_struct(),),
+    (b'{foo:bar,', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
+    (b'[[],', e_start_list(), e_start_list(), e_end_list()),
+    (b'{foo:{},', e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct()),
+    (b'foo',),  # Might be an annotation.
+    (b'\'foo\'',),  # Might be an annotation.
+    (b'\'\'\'foo\'\'\'/**/',),  # Might be followed by another triple-quoted string.
+    (b'123',),  # Might have more digits.
+    (b'-',),
+    (b'1.2',),
+    (b'1.2e',),
+    (b'1.2e-',),
+    (b'1.2d',),
+    (b'1.2d3',),
+    (b'1_',),
+    (b'0b',),
+    (b'0x',),
+    (b'2000-01',),
+    (b'"abc',),
+    (b'false',),  # Might be a symbol with more characters.
+    (b'null.string',),  # Might be a symbol with more characters.
+    (b'/',),
+    (b'/*',),
+    (b'//',),
+    (b'foo:',),
+    (b'foo::',),
+    (b'foo::bar',),
+    (b'foo//\n',),
+    (b'{foo', e_start_struct()),
+    (b'{{',),
+    (b'{{"',),
+    (b'(foo-', e_start_sexp(), e_symbol(value=b'foo')),
+    (b'(-foo', e_start_sexp(), e_symbol(value=b'-')),
+)
+
+
+def _good_sexp(*events):
+    return (e_start_sexp(),) + events + (e_end_sexp(),)
+
+
+def _good_struct(*events):
+    return (e_start_struct(),) + events + (e_end_struct(),)
+
+
+def _good_list(*events):
+    return (e_start_list(),) + events + (e_end_list(),)
+
+
+_GOOD = (
+    (b'[]',) + _good_list(),
+    (b'()',) + _good_sexp(),
+    (b'{}',) + _good_struct(),
+    (b'{/**/}',) + _good_struct(),
+    (b'(/**/)',) + _good_sexp(),
+    (b'[/**/]',) + _good_list(),
+    (b'{//\n}',) + _good_struct(),
+    (b'(//\n)',) + _good_sexp(),
+    (b'[//\n]',) + _good_list(),
+    (b'{/**///\n}',) + _good_struct(),
+    (b'(/**///\n)',) + _good_sexp(),
+    (b'[/**///\n]',) + _good_list(),
+    (b'/*foo*///bar\n/*baz*/',),
+    (b'\'\'::123 ', e_int(value=b'123', annotations=(b'',))),
+    (b'{foo:zar::[], bar: (), baz:{}}',) + _good_struct(
+        e_start_list(field_name=b'foo', annotations=(b'zar',)), e_end_list(),
+        e_start_sexp(field_name=b'bar'), e_end_sexp(),
+        e_start_struct(field_name=b'baz'), e_end_struct()
+    ),
+    (b'[[], zar::{}, ()]',) + _good_list(
+        e_start_list(), e_end_list(),
+        e_start_struct(annotations=(b'zar',)), e_end_struct(),
+        e_start_sexp(), e_end_sexp(),
+    ),
+    (b'{\'\':bar,}',) + _good_struct(e_symbol(field_name=b'', value=b'bar')),
+)
+
+
+_UNSPACED_SEXPS = (
+    (b'(foo //bar\n::baz)',) + _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',))),
+    (b'(foo/*bar*/ ::baz)',) + _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',))),
+    (b'(\'a b\' //\n::cd)',) + _good_sexp(e_symbol(value=b'cd', annotations=(b'a b',))),
+    (b'(abc//baz\n-)',) + _good_sexp(e_symbol(b'abc'), e_symbol(b'-')),
+    (b'(null-100/**/)',) + _good_sexp(e_null(), e_int(b'-100')),
+    (b'(//\nnull//\n)',) + _good_sexp(e_null()),
+    (b'(abc/*baz*/123)',) + _good_sexp(e_symbol(b'abc'), e_int(b'123')),
+    (b'(abc/*baz*/-)',) + _good_sexp(e_symbol(b'abc'), e_symbol(b'-')),
+    (b'(abc//baz\n123)',) + _good_sexp(e_symbol(b'abc'), e_int(b'123')),
+    (b'(foo%+null-//\n)',) + _good_sexp(e_symbol(b'foo'), e_symbol(b'%+'), e_null(), e_symbol(b'-//')),  # Matches java.
+    (b'(null-100)',) + _good_sexp(e_null(), e_int(b'-100')),
+    (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b')),
+    (b'(-100)',) + _good_sexp(e_int(b'-100')),
+    (b'(-1.23 .)',) + _good_sexp(e_decimal(b'-1.23'), e_symbol(b'.')),
+    (b'(nul)',) + _good_sexp(e_symbol(b'nul')),
+    (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=b'%-', annotations=(b'foo',)), e_symbol(b'bar')),
+    (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(b'.'), e_symbol(b'False'), e_symbol(b'+')),
+    (b'(false)',) + _good_sexp(e_bool(False)),
+    (b'({}()zar::[])',) + _good_sexp(
+        e_start_struct(), e_end_struct(),
+        e_start_sexp(), e_end_sexp(),
+        e_start_list(annotations=(b'zar',)), e_end_list()
+    ),
+)
+
+_GOOD_SCALARS = (
     (b'null', e_null()),
 
     (b'false', e_bool(False)),
@@ -146,12 +293,15 @@ def _scalar_event_pairs(data, events, delimiter):
         yield input_event, event
 
 
-def _scalar_iter(delimiter, values=_SCALARS):
+def _value_iter(event_func, values, delimiter):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     for seq in values:
         data = seq[0]
-        event_pairs = list(_scalar_event_pairs(data, seq[1:], delimiter))
+        event_pairs = list(event_func(data, seq[1:], delimiter))
         yield data, event_pairs
+
+
+_scalar_iter = partial(_value_iter, _scalar_event_pairs, _GOOD_SCALARS)
 
 
 @coroutine
@@ -384,191 +534,40 @@ def _containerize_params(param_generator, with_skip=True, depth=0):
             break
 
 
-def _expect_event(expected_event, delimiter, desc, text, events=()):
+def _expect_event(expected_event, data, events, delimiter):
     """Generates event pairs for a stream that ends in an expected event (or exception), given the text and the output
     events preceding the expected event.
     """
     events += (expected_event,)
     outputs = events[1:]
-    event_pairs = [(e_read(text + delimiter), events[0])] + zip([NEXT] * len(outputs), outputs)
-    return _P(
-        desc='%s %s' % (desc, text),
-        event_pairs=[(NEXT, END)] + event_pairs
-    )
+    event_pairs = [(e_read(data + delimiter), events[0])] + zip([NEXT] * len(outputs), outputs)
+    return event_pairs
 
 
-_ion_exception = partial(_expect_event, IonException, b' ', 'BAD')
-_incomplete = partial(_expect_event, INC, b'', 'INC')
-_good = partial(_expect_event, END, b'', 'GOOD')
-
-
-def _params(event_func, data_event_pairs):
+def _basic_params(event_func, desc, delimiter, data_event_pairs):
     @listify
-    def generate_params():
-        for pair in data_event_pairs:
-            elems = len(pair)
-            assert 1 <= elems <= 2  # data, tuple of events
-            events = elems == 2 and pair[1] or ()
-            yield event_func(pair[0], events)
-    return generate_params()
-
-_BAD = _params(_ion_exception, (
-    (b'+1',),
-    (b'01',),
-    (b'1.23.4',),
-    (b'1__0',),
-    (b'1_e1',),
-    (b'1e_1',),
-    (b'1e1_',),
-    (b'1._0',),
-    (b'1_.0',),
-    (b'-_1',),
-    (b'1_',),
-    (b'0_x1',),
-    (b'0b_1',),
-    (b'null.strings',),
-    (b'200T',),
-    (b'2000-01',),
-    (b'2007-02-23T20:14:33.Z',),
-    (b'1a',),
-    # (b'{{/**/}}',),  # TODO these are all lexed as blobs. Once base64 parsing is included, they will fail
-    # (b'{{//\n}}',),
-    # (b'{{/**/"abc"}}',),
-    (b'{{"abc"//\n}}',),
-    (b'{{\'\'\'abc\'\'\'//\n\'\'\'def\'\'\'}}',),
-    (b'{{ abcd} }',),
-    (b'{ {abcd}}', (e_start_struct(),)),
-    (b'{foo:bar/**/baz:zar}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
-    (b'[abc 123]', (e_start_list(), e_symbol(value=b'abc'))),
-    (b'{foo::bar:baz}', (e_start_struct(),)),
-    (b'[abc, , 123]', (e_start_list(), e_symbol(value=b'abc'))),
-    (b'{foo:bar, ,}', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'),)),
-    (b'(1.23.)', (e_start_sexp(), ))
-))
-
-_INCOMPLETE = _params(_incomplete, (
-    (b'{',),  # Might be a lob.
-    (b'{ ', (e_start_struct(),)),
-    (b'[', (e_start_list(),)),
-    (b'(', (e_start_sexp(),)),
-    (b'[[]', (e_start_list(), e_start_list(), e_end_list())),
-    (b'(()', (e_start_sexp(), e_start_sexp(), e_end_sexp())),
-    (b'{foo:{}', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
-    (b'{foo:bar', (e_start_struct(),)),
-    (b'{foo:bar::', (e_start_struct(),)),
-    (b'{foo:bar,', (e_start_struct(), e_symbol(value=b'bar', field_name=b'foo'))),
-    (b'[[],', (e_start_list(), e_start_list(), e_end_list())),
-    (b'{foo:{},', (e_start_struct(), e_start_struct(field_name=b'foo'), e_end_struct())),
-    (b'foo',),  # Might be an annotation.
-    (b'\'foo\'',),  # Might be an annotation.
-    (b'\'\'\'foo\'\'\'/**/',),  # Might be followed by another triple-quoted string.
-    (b'123',),  # Might have more digits.
-    (b'-',),
-    (b'1.2',),
-    (b'1.2e',),
-    (b'1.2e-',),
-    (b'1.2d',),
-    (b'1.2d3',),
-    (b'1_',),
-    (b'0b',),
-    (b'0x',),
-    (b'2000-01',),
-    (b'"abc',),
-    (b'false',),  # Might be a symbol with more characters.
-    (b'null.string',),  # Might be a symbol with more characters.
-    (b'/*',),
-    (b'//',),
-    (b'foo:',),
-    (b'foo::',),
-    (b'foo::bar',),
-    (b'foo//\n',),
-    (b'{foo', (e_start_struct(),)),
-    (b'{{',),
-    (b'{{"',),
-    (b'(foo-', (e_start_sexp(), e_symbol(value=b'foo'))),
-    (b'(-foo', (e_start_sexp(), e_symbol(value=b'-'))),
-))
+    def collect_params():
+        for data, events in _value_iter(event_func, data_event_pairs, delimiter):
+            yield _P(
+                desc='%s %s' % (desc, data),
+                event_pairs=[(NEXT, END)] + events
+            )
+    return collect_params()
 
 
-def _good_sexp(*events):
-    return (e_start_sexp(),) + events + (e_end_sexp(),)
-
-
-def _good_struct(*events):
-    return (e_start_struct(),) + events + (e_end_struct(),)
-
-
-def _good_list(*events):
-    return (e_start_list(),) + events + (e_end_list(),)
-
-
-_GOOD = _params(_good, (
-    (b'[]', _good_list()),
-    (b'()', _good_sexp()),
-    (b'{}', _good_struct()),
-    (b'{/**/}', _good_struct()),
-    (b'(/**/)', _good_sexp()),
-    (b'[/**/]', _good_list()),
-    (b'{//\n}', _good_struct()),
-    (b'(//\n)', _good_sexp()),
-    (b'[//\n]', _good_list()),
-    (b'{/**///\n}', _good_struct()),
-    (b'(/**///\n)', _good_sexp()),
-    (b'[/**///\n]', _good_list()),
-    (b'/*foo*///bar\n/*baz*/',),
-    (b'\'\'::123 ', (e_int(value=b'123', annotations=(b'',)),)),
-    (b'{foo:zar::[], bar: (), baz:{}}',
-        _good_struct(
-            e_start_list(field_name=b'foo', annotations=(b'zar',)), e_end_list(),
-            e_start_sexp(field_name=b'bar'), e_end_sexp(),
-            e_start_struct(field_name=b'baz'), e_end_struct()
-        )
-     ),
-    (b'[[], zar::{}, ()]',
-        _good_list(
-            e_start_list(), e_end_list(),
-            e_start_struct(annotations=(b'zar',)), e_end_struct(),
-            e_start_sexp(), e_end_sexp(),
-        )
-     ),
-    (b'{\'\':bar,}', _good_struct(e_symbol(field_name=b'', value=b'bar'))),
-))
-
-
-_UNSPACED_SEXPS = _params(_good, (
-    (b'(foo //bar\n::baz)', _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',)))),
-    (b'(foo/*bar*/ ::baz)', _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',)))),
-    (b'(\'a b\' //\n::cd)', _good_sexp(e_symbol(value=b'cd', annotations=(b'a b',)))),
-    (b'(abc//baz\n-)', _good_sexp(e_symbol(b'abc'), e_symbol(b'-'))),
-    (b'(null-100/**/)', _good_sexp(e_null(), e_int(b'-100'))),
-    (b'(//\nnull//\n)', _good_sexp(e_null())),
-    (b'(abc/*baz*/123)', _good_sexp(e_symbol(b'abc'), e_int(b'123'))),
-    (b'(abc/*baz*/-)', _good_sexp(e_symbol(b'abc'), e_symbol(b'-'))),
-    (b'(abc//baz\n123)', _good_sexp(e_symbol(b'abc'), e_int(b'123'))),
-    (b'(foo%+null-//\n)', _good_sexp(e_symbol(b'foo'), e_symbol(b'%+'), e_null(), e_symbol(b'-//'))),  # Matches java.
-    (b'(null-100)', _good_sexp(e_null(), e_int(b'-100'))),
-    (b'(null.string.b)', _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b'))),
-    (b'(-100)', _good_sexp(e_int(b'-100'))),
-    (b'(-1.23 .)', _good_sexp(e_decimal(b'-1.23'), e_symbol(b'.'))),
-    (b'(nul)', _good_sexp(e_symbol(b'nul'))),
-    (b'(foo::%-bar)', _good_sexp(e_symbol(value=b'%-', annotations=(b'foo',)), e_symbol(b'bar'))),
-    (b'(true.False+)', _good_sexp(e_bool(True), e_symbol(b'.'), e_symbol(b'False'), e_symbol(b'+'))),
-    (b'(false)', _good_sexp(e_bool(False))),
-    (b'({}()zar::[])',
-        _good_sexp(
-            e_start_struct(), e_end_struct(),
-            e_start_sexp(), e_end_sexp(),
-            e_start_list(annotations=(b'zar',)), e_end_list()
-        )
-     ),
-))
+_ion_exception = partial(_expect_event, IonException)
+_bad_params = partial(_basic_params, _ion_exception, 'BAD', b' ')
+_incomplete = partial(_expect_event, INC)
+_incomplete_params = partial(_basic_params, _incomplete, 'INC', b'')
+_end = partial(_expect_event, END)
+_good_params = partial(_basic_params, _end, 'GOOD', b'')
 
 
 @parametrize(*chain(
-    _GOOD,
-    _BAD,
-    _INCOMPLETE,
-    _UNSPACED_SEXPS,
+    _good_params(_GOOD),
+    _bad_params(_BAD),
+    _incomplete_params(_INCOMPLETE),
+    _good_params(_UNSPACED_SEXPS),
     _top_level_value_params(),  # all top-level values as individual data events, space-delimited
     _all_top_level_as_one_stream_params(),  # all top-level values as one data event, space-delimited
     _all_top_level_as_one_stream_params(b'/*foo*/'),  # all top-level values as one data event, block comment delimited
