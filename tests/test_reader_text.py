@@ -315,7 +315,7 @@ def _scalar_params():
             )
 
 
-def _top_level_value_params(delimiter=b' '):
+def _top_level_value_params(delimiter=b' ', is_delegate=False):
     # TODO duplicated in test_reader_binary -- consolidate in reader_util
     """Converts the top-level tuple list into parameters with appropriate ``NEXT`` inputs.
 
@@ -330,6 +330,8 @@ def _top_level_value_params(delimiter=b' '):
                  (first.event_type.name, first.ion_type.name, data),
             event_pairs=[(NEXT, END)] + event_pairs + [(NEXT, END)],
         )
+    if is_delegate:
+        yield
 
 
 @coroutine
@@ -425,7 +427,7 @@ _annotations_generator = _generate_annotations()
 
 
 @coroutine
-def _annotate_params(params):
+def _annotate_params(params, is_delegate=False):
     """Adds annotation wrappers for a given iterator of parameters,
 
     The requirement is that the given parameters completely encapsulate a single value.
@@ -460,6 +462,8 @@ def _annotate_params(params):
                 desc='ANN %r on %s' % (expected_annotations, param.desc),
                 event_pairs=annotated(),
             )
+        if not is_delegate:
+            break
 
 
 def _generate_field_name():
@@ -477,7 +481,7 @@ _field_name_generator = _generate_field_name()
 
 
 @coroutine
-def _containerize_params(param_generator, with_skip=True, depth=0):
+def _containerize_params(param_generator, with_skip=True, is_delegate=False, top_level=True):
     """Adds container wrappers for a given iteration of parameters.
 
     The requirement is that each parameter is a self-contained single value.
@@ -512,7 +516,7 @@ def _containerize_params(param_generator, with_skip=True, depth=0):
                         yield read_event, ion_event
                 start = []
                 end = [(e_read(info[2]), e_end(ion_type))]
-                if depth == 0:
+                if top_level:
                     start = [(NEXT, END)]
                     end += [(NEXT, END)]
                 else:
@@ -530,7 +534,7 @@ def _containerize_params(param_generator, with_skip=True, depth=0):
                     desc=desc,
                     event_pairs=start + mid + end,
                 )
-        if depth == 0:
+        if not is_delegate:
             break
 
 
@@ -544,15 +548,21 @@ def _expect_event(expected_event, data, events, delimiter):
     return event_pairs
 
 
-def _basic_params(event_func, desc, delimiter, data_event_pairs):
-    @listify
-    def collect_params():
+@coroutine
+def _basic_params(event_func, desc, delimiter, data_event_pairs, is_delegate=False, top_level=True):
+    while True:
+        yield
         for data, events in _value_iter(event_func, data_event_pairs, delimiter):
+            event_pairs = []
+            if top_level:
+                event_pairs += [(NEXT, END)]
+            event_pairs += events
             yield _P(
                 desc='%s %s' % (desc, data),
-                event_pairs=[(NEXT, END)] + events
+                event_pairs=event_pairs
             )
-    return collect_params()
+        if not is_delegate:
+            break
 
 
 _ion_exception = partial(_expect_event, IonException)
@@ -572,13 +582,15 @@ _good_params = partial(_basic_params, _end, 'GOOD', b'')
     _all_top_level_as_one_stream_params(),  # all top-level values as one data event, space-delimited
     _all_top_level_as_one_stream_params(b'/*foo*/'),  # all top-level values as one data event, block comment delimited
     _all_top_level_as_one_stream_params(b'//foo\n'),  # all top-level values as one data event, line comment delimited
-    _annotate_params(_top_level_value_params()),  # all annotated top-level values, spaces postpended
-    _annotate_params(_top_level_value_params(b'//foo\n/*bar*/')),  # all annotated top-level values, comments postpended
+    _annotate_params(_top_level_value_params(is_delegate=True)),  # all annotated top-level values, spaces postpended
+    _annotate_params(_top_level_value_params(b'//foo\n/*bar*/', is_delegate=True)),  # all annotated top-level values, comments postpended
+    _annotate_params(_good_params(_UNSPACED_SEXPS, is_delegate=True)),
     _containerize_params(_scalar_params()),  # all values, each as the only value within a container
-    _containerize_params(_containerize_params(_scalar_params(), depth=1)),
-    _containerize_params(_annotate_params(_scalar_params())),  # all values, each as the only value within a container
+    _containerize_params(_containerize_params(_scalar_params(), is_delegate=True, top_level=False)),
+    _containerize_params(_annotate_params(_scalar_params(), is_delegate=True)),  # all values, each as the only value within a container
     _containerize_params(_all_scalars_in_one_container_params()),  # all values within a single container
-    _containerize_params(_annotate_params(_all_scalars_in_one_container_params())),  # annotated containers
+    _containerize_params(_annotate_params(_all_scalars_in_one_container_params(), is_delegate=True)),  # annotated containers
+    _containerize_params(_annotate_params(_incomplete_params(_UNSPACED_SEXPS, is_delegate=True, top_level=False), is_delegate=True)),
 ))
 def test_raw_reader(p):
     reader_scaffold(reader(), p.event_pairs)
