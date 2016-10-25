@@ -312,63 +312,37 @@ def number_or_timestamp_handler(c, ctx):
         c, _ = yield trans
 
 
-@coroutine
-def number_handler(c, ctx):
-    val = ctx.value
-    if c != _UNDERSCORE:
-        val.append(c)
-    prev = c
-    c, self = yield
-    trans = (Transition(None, self), None)
-    while True:
-        if c in _NUMBER_TERMINATORS:
-            if prev == _UNDERSCORE:
-                raise IonException('%s at end of int' % (chr(prev),))
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-        else:
-            if c == _UNDERSCORE:
-                if prev == _UNDERSCORE:
-                    raise IonException('Underscore after %s' % (chr(prev),))
-            else:
-                if c not in _DIGITS:
-                    if prev == _UNDERSCORE:
-                        raise IonException('Underscore before %s' % (chr(c),))
-                    trans = ctx.immediate_transition(_NUMBER_TABLE[c](c, ctx))
-                else:
-                    val.append(c)
+def _generate_coefficient_handler(trans_table, assertion=lambda(c): True, ion_type=None, append_first_if_not=None):
+    @coroutine
+    def coefficient_handler(c, ctx):
+        assert assertion(c)
+        if ion_type is not None:
+            ctx = ctx.derive_ion_type(ion_type)
+        val = ctx.value
+        if c != append_first_if_not:
+            val.append(c)
         prev = c
-        c, _ = yield trans
-
-
-@coroutine
-def real_number_handler(c, ctx):
-    assert c == ord('.')
-    ctx = ctx.derive_ion_type(IonType.DECIMAL)  # If this is the last character read, this value is a decimal
-    val = ctx.value
-    val.append(c)
-    prev = c
-    c, self = yield
-    if c == _UNDERSCORE:
-        raise IonException('Underscore after decimal point')
-    trans = (Transition(None, self), None)
-    while True:
-        if c in _NUMBER_TERMINATORS:
-            if prev == _UNDERSCORE:
-                raise IonException('%s at end of decimal' % (chr(prev),))
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-        else:
-            if c == _UNDERSCORE:
+        c, self = yield
+        trans = (Transition(None, self), None)
+        while True:
+            if c in _NUMBER_TERMINATORS:
                 if prev == _UNDERSCORE:
-                    raise IonException('Underscore after %s' % (chr(prev),))
+                    raise IonException('%s at end of decimal' % (chr(prev),))
+                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
             else:
-                if c not in _DIGITS:
-                    if prev == _UNDERSCORE:
-                        raise IonException('Underscore before %s' % (chr(c),))
-                    trans = ctx.immediate_transition(_REAL_NUMBER_TABLE[c](c, ctx))
+                if c == _UNDERSCORE:
+                    if prev == _UNDERSCORE or prev == ord('.'):
+                        raise IonException('Underscore after %s' % (chr(prev),))
                 else:
-                    val.append(c)
-        prev = c
-        c, _ = yield trans
+                    if c not in _DIGITS:
+                        if prev == _UNDERSCORE:
+                            raise IonException('Underscore before %s' % (chr(c),))
+                        trans = ctx.immediate_transition(trans_table[c](c, ctx))
+                    else:
+                        val.append(c)
+            prev = c
+            c, _ = yield trans
+    return coefficient_handler
 
 
 def _generate_exponent_handler(ion_type, exp_chars):
@@ -380,8 +354,6 @@ def _generate_exponent_handler(ion_type, exp_chars):
         val.append(c)
         prev = c
         c, self = yield
-        if c == _UNDERSCORE:
-            raise IonException('Underscore after exponent')
         trans = (Transition(None, self), None)
         negative_exp = False
         while True:
@@ -410,6 +382,27 @@ def _generate_exponent_handler(ion_type, exp_chars):
 
 decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
 float_handler = _generate_exponent_handler(IonType.FLOAT, _FLOAT_EXPS)
+
+
+_REAL_NUMBER_TABLE = _whitelist({
+    ord('d'): decimal_handler,
+    ord('e'): float_handler,
+    ord('D'): decimal_handler,
+    ord('E'): float_handler,
+})
+
+fractional_number_handler = _generate_coefficient_handler(
+    _REAL_NUMBER_TABLE, assertion=lambda(c): c == ord('.'), ion_type=IonType.DECIMAL)
+
+_NUMBER_TABLE = _whitelist({
+    ord('.'): fractional_number_handler,
+    ord('d'): decimal_handler,
+    ord('e'): float_handler,
+    ord('D'): decimal_handler,
+    ord('E'): float_handler,
+})
+
+whole_number_handler = _generate_coefficient_handler(_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
 
 
 @coroutine
@@ -1111,13 +1104,6 @@ def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
         trans = Transition(stream_event, self)
 
 
-_REAL_NUMBER_TABLE = _whitelist({
-    ord('d'): decimal_handler,
-    ord('e'): float_handler,
-    ord('D'): decimal_handler,
-    ord('E'): float_handler,
-})
-
 _ZERO_START_TABLE = _whitelist({
     ord('0'): timestamp_zero_start_handler,
     ord('1'): timestamp_zero_start_handler,
@@ -1133,7 +1119,7 @@ _ZERO_START_TABLE = _whitelist({
     ord('x'): hex_int_handler,
     ord('B'): binary_int_handler,
     ord('X'): hex_int_handler,
-    ord('.'): real_number_handler,
+    ord('.'): fractional_number_handler,
     ord('d'): decimal_handler,
     ord('e'): float_handler,
     ord('D'): decimal_handler,
@@ -1143,16 +1129,8 @@ _ZERO_START_TABLE = _whitelist({
 _NUMBER_OR_TIMESTAMP_TABLE = _whitelist({
     ord('-'): timestamp_handler,
     ord('T'): timestamp_handler,
-    ord('.'): real_number_handler,
-    ord('_'): number_handler,
-    ord('d'): decimal_handler,
-    ord('e'): float_handler,
-    ord('D'): decimal_handler,
-    ord('E'): float_handler,
-})
-
-_NUMBER_TABLE = _whitelist({
-    ord('.'): real_number_handler,
+    ord('.'): fractional_number_handler,
+    ord('_'): whole_number_handler,
     ord('d'): decimal_handler,
     ord('e'): float_handler,
     ord('D'): decimal_handler,
@@ -1161,15 +1139,15 @@ _NUMBER_TABLE = _whitelist({
 
 _NEGATIVE_TABLE = _whitelist({
     ord('0'): number_zero_start_handler,
-    ord('1'): number_handler,
-    ord('2'): number_handler,
-    ord('3'): number_handler,
-    ord('4'): number_handler,
-    ord('5'): number_handler,
-    ord('6'): number_handler,
-    ord('7'): number_handler,
-    ord('8'): number_handler,
-    ord('9'): number_handler,
+    ord('1'): whole_number_handler,
+    ord('2'): whole_number_handler,
+    ord('3'): whole_number_handler,
+    ord('4'): whole_number_handler,
+    ord('5'): whole_number_handler,
+    ord('6'): whole_number_handler,
+    ord('7'): whole_number_handler,
+    ord('8'): whole_number_handler,
+    ord('9'): whole_number_handler,
 }, negative_inf_or_sexp_hyphen_handler)
 
 _STRUCT_OR_LOB_TABLE = _whitelist({

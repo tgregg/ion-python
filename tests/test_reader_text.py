@@ -220,6 +220,7 @@ _GOOD_SCALARS = (
 
     (b'null.int', e_int()),
     (b'0', e_int(_b(b'0'))),
+    (b'1_2_3', e_int(_b(b'123'))),
     (b'0xfe', e_int(_b(b'0xfe'))),
     (b'0b101', e_int(_b(b'0b101'))),
     (b'0b10_1', e_int(_b(b'0b101'))),
