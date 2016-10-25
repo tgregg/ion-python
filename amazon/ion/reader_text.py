@@ -52,6 +52,8 @@ _NUMBER_TERMINATORS = _seq('{}[](),\"\' \t\n\r/')
 _DIGITS = _seq(string.digits)
 _BINARY_DIGITS = _seq('01')
 _HEX_DIGITS = _DIGITS + _seq('abcdef')
+_DECIMAL_EXPS = _seq('Dd')
+_FLOAT_EXPS = _seq('Ee')
 _TIMESTAMP_DELIMITERS = _seq('-:+.')
 _TIMESTAMP_OFFSET_INDICATORS = _seq('Z+-')
 _IDENTIFIER_STARTS = _seq(string.ascii_letters) + (_seq('$_'))
@@ -369,76 +371,45 @@ def real_number_handler(c, ctx):
         c, _ = yield trans
 
 
-@coroutine
-def decimal_handler(c, ctx):
-    assert c == ord('d') or c == ord('D')
-    # assert ctx.ion_type == IonType.DECIMAL  # Not in the case of leading zero, e.g. 0d0
-    ctx = ctx.derive_ion_type(IonType.DECIMAL)  # If this is the last character read, this value is a decimal
-    val = ctx.value
-    val.append(c)
-    prev = c
-    c, self = yield
-    if c == _UNDERSCORE:
-        raise IonException('Underscore after exponent')
-    trans = (Transition(None, self), None)
-    negative_exp = False
-    while True:
-        if c in _NUMBER_TERMINATORS:
-            if prev == _UNDERSCORE or prev == ord('d') or c == ord('D') or prev == ord('-'):
-                raise IonException('%s at end of decimal' % (chr(prev),))
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-        else:
-            if c == _UNDERSCORE:
-                if prev == _UNDERSCORE or prev == ord('d') or c == ord('D') or prev == ord('-'):
-                    raise IonException('Underscore after %s' % (chr(prev),))
-            else:
-                if c == ord('-'):
-                    if negative_exp:
-                        raise IonException('Multiple negatives in decimal exponent')
-                    negative_exp = True
-                    val.append(c)
-                elif c not in _DIGITS:
-                    _illegal_character(c, ctx)
-                else:
-                    val.append(c)
+def _generate_exponent_handler(ion_type, exp_chars):
+    @coroutine
+    def exponent_handler(c, ctx):
+        assert c in exp_chars
+        ctx = ctx.derive_ion_type(ion_type)
+        val = ctx.value
+        val.append(c)
         prev = c
-        c, _ = yield trans
+        c, self = yield
+        if c == _UNDERSCORE:
+            raise IonException('Underscore after exponent')
+        trans = (Transition(None, self), None)
+        negative_exp = False
+        while True:
+            if c in _NUMBER_TERMINATORS:
+                if prev == _UNDERSCORE or prev in exp_chars or prev == ord('-'):
+                    raise IonException('%s at end of real number' % (chr(prev),))
+                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+            else:
+                if c == _UNDERSCORE:
+                    if prev == _UNDERSCORE or prev in exp_chars or prev == ord('-'):
+                        raise IonException('Underscore after %s' % (chr(prev),))
+                else:
+                    if c == ord('-'):
+                        if negative_exp:
+                            raise IonException('Multiple negatives in exponent')
+                        negative_exp = True
+                        val.append(c)
+                    elif c not in _DIGITS:
+                        _illegal_character(c, ctx)
+                    else:
+                        val.append(c)
+            prev = c
+            c, _ = yield trans
+    return exponent_handler
 
 
-@coroutine
-def float_handler(c, ctx):
-    assert c == ord('e') or c == ord('E')
-    ctx = ctx.derive_ion_type(IonType.FLOAT)
-    val = ctx.value
-    val.append(c)
-    prev = c
-    c, self = yield
-    if c == _UNDERSCORE:
-        raise IonException('Underscore after exponent')
-    trans = (Transition(None, self), None)
-    negative_exp = False
-    while True:
-        if c in _NUMBER_TERMINATORS:
-            if prev == _UNDERSCORE or prev == ord('e') or c == ord('E') or prev == ord('-'):
-                raise IonException('%s at end of float' % (chr(prev),))
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-        else:
-            if c == _UNDERSCORE:
-                if prev == _UNDERSCORE or prev == ord('e') or c == ord('E') or prev == ord('-'):
-                    raise IonException('Underscore after %s' % (chr(prev),))
-                val.append(c)
-            else:
-                if c == ord('-'):
-                    if negative_exp:
-                        raise IonException('Multiple negatives in float exponent')
-                    negative_exp = True
-                    val.append(c)
-                elif c not in _DIGITS:
-                    _illegal_character(c, ctx)
-                else:
-                    val.append(c)
-        prev = c
-        c, _ = yield trans
+decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
+float_handler = _generate_exponent_handler(IonType.FLOAT, _FLOAT_EXPS)
 
 
 @coroutine
