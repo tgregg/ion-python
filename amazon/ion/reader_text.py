@@ -698,45 +698,56 @@ def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
 
 _INF_SEQUENCE = tuple(ord(x) for x in 'inf')
 
-@coroutine
-def sexp_hyphen_handler(c, ctx):
-    assert ctx.value[0] == ord('-')
-    assert c not in _DIGITS
-    ctx.queue.unread(c)
-    next_ctx = ctx
-    _, self = yield
-    assert c == _
-    maybe_inf = True
-    match_index = 0
-    trans = (Transition(None, self), None)
-    while True:
-        if maybe_inf:
-            if match_index < len(_INF_SEQUENCE):
-                maybe_inf = c == _INF_SEQUENCE[match_index]
-            else:
-                if c in _NUMBER_END_SEQUENCE[0] or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, bytearray(b'-inf'))
-                else:
-                    maybe_inf = False
-        if maybe_inf:
-            match_index += 1
+
+def _generate_inf_or_operator_handler(c_start, is_delegate=True):
+    @coroutine
+    def inf_or_operator_handler(c, ctx):
+        if not is_delegate:
+            ctx.value.append(c_start)
+            c, self = yield
         else:
-            if match_index > 0:
-                next_ctx = ctx.derive_child_context(ctx.whence)
-                for ch in _INF_SEQUENCE[0:match_index]:
-                    next_ctx.value.append(ch)
-            break
-        c, self = yield trans
-    if ctx.container.ion_type is not IonType.SEXP:
-        raise IonException("Illegal character following -")  # TODO
-    if match_index == 0:
-        if c in _OPERATORS:
-            yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
-        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
-    next_immediate = next_ctx.immediate_transition(symbol_handler(c, next_ctx))
-    ctx = ctx.derive_ion_type(IonType.SYMBOL)
-    yield [ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0]] \
-        + [next_immediate[0]], next_ctx
+            assert ctx.value[0] == ord(c_start)
+            assert c not in _DIGITS
+            ctx.queue.unread(c)
+            next_ctx = ctx
+            _, self = yield
+            assert c == _
+        maybe_inf = True
+        match_index = 0
+        trans = (Transition(None, self), None)
+        while True:
+            if maybe_inf:
+                if match_index < len(_INF_SEQUENCE):
+                    maybe_inf = c == _INF_SEQUENCE[match_index]
+                else:
+                    if c in _NUMBER_END_SEQUENCE[0] or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
+                        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, bytearray(c_start + b'inf'))
+                    else:
+                        maybe_inf = False
+            if maybe_inf:
+                match_index += 1
+            else:
+                if match_index > 0:
+                    next_ctx = ctx.derive_child_context(ctx.whence)
+                    for ch in _INF_SEQUENCE[0:match_index]:
+                        next_ctx.value.append(ch)
+                break
+            c, self = yield trans
+        if ctx.container.ion_type is not IonType.SEXP:
+            raise IonException("Illegal character %s following %s" % (chr(c), c_start))  # TODO
+        if match_index == 0:
+            if c in _OPERATORS:
+                yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
+            yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
+        next_immediate = next_ctx.immediate_transition(symbol_handler(c, next_ctx))
+        ctx = ctx.derive_ion_type(IonType.SYMBOL)
+        yield [ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0]] \
+              + [next_immediate[0]], next_ctx
+    return inf_or_operator_handler
+
+
+negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(b'-')
+positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(b'+', is_delegate=False)
 
 
 @coroutine
@@ -998,7 +1009,7 @@ _NUMBER_TABLE = {
 }
 
 _NEGATIVE_TABLE = defaultdict(
-    lambda: sexp_hyphen_handler
+    lambda: negative_inf_or_sexp_hyphen_handler
 )
 _NEGATIVE_TABLE[ord('0')] = number_zero_start_handler
 _NEGATIVE_TABLE[ord('1')] = number_handler
@@ -1020,6 +1031,7 @@ _START_TABLE = defaultdict(
     lambda: symbol_or_null_or_bool_handler
 )
 _START_TABLE[ord('-')] = number_negative_start_handler
+_START_TABLE[ord('+')] = positive_inf_or_sexp_plus_handler
 _START_TABLE[ord('0')] = number_zero_start_handler
 _START_TABLE[ord('1')] = number_or_timestamp_handler
 _START_TABLE[ord('2')] = number_or_timestamp_handler
