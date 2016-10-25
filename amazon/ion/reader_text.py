@@ -50,7 +50,9 @@ def _seq(s):
 _WHITESPACE = _seq(' \t\n\r')
 _NUMBER_TERMINATORS = _seq('{}[](),\"\' \t\n\r/')
 _DIGITS = _seq(string.digits)
+_BINARY_RADIX = _seq('Bb')
 _BINARY_DIGITS = _seq('01')
+_HEX_RADIX = _seq('Xx')
 _HEX_DIGITS = _DIGITS + _seq('abcdef')
 _DECIMAL_EXPS = _seq('Dd')
 _FLOAT_EXPS = _seq('Ee')
@@ -384,7 +386,7 @@ decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
 float_handler = _generate_exponent_handler(IonType.FLOAT, _FLOAT_EXPS)
 
 
-_REAL_NUMBER_TABLE = _whitelist({
+_FRACTIONAL_NUMBER_TABLE = _whitelist({
     ord('d'): decimal_handler,
     ord('e'): float_handler,
     ord('D'): decimal_handler,
@@ -392,9 +394,9 @@ _REAL_NUMBER_TABLE = _whitelist({
 })
 
 fractional_number_handler = _generate_coefficient_handler(
-    _REAL_NUMBER_TABLE, assertion=lambda(c): c == ord('.'), ion_type=IonType.DECIMAL)
+    _FRACTIONAL_NUMBER_TABLE, assertion=lambda (c): c == ord('.'), ion_type=IonType.DECIMAL)
 
-_NUMBER_TABLE = _whitelist({
+_WHOLE_NUMBER_TABLE = _whitelist({
     ord('.'): fractional_number_handler,
     ord('d'): decimal_handler,
     ord('e'): float_handler,
@@ -402,69 +404,44 @@ _NUMBER_TABLE = _whitelist({
     ord('E'): float_handler,
 })
 
-whole_number_handler = _generate_coefficient_handler(_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
+whole_number_handler = _generate_coefficient_handler(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
 
 
-@coroutine
-def binary_int_handler(c, ctx):
-    assert c == ord('b') or c == ord('B')
-    assert (len(ctx.value) == 1 and ctx.value[0] == ord('0')) \
-        or (len(ctx.value) == 2 and ctx.value[0] == ord('-') and ctx.value[1] == ord('0'))
-    assert ctx.ion_type == IonType.INT
-    val = ctx.value
-    val.append(c)
-    prev = c
-    c, self = yield
-    if c == _UNDERSCORE:
-        raise IonException('Underscore after radix')
-    trans = (Transition(None, self), None)
-    while True:
-        if c in _NUMBER_TERMINATORS:
-            if prev == _UNDERSCORE or prev == ord('b') or prev == ord('B'):
-                raise IonException('%s at end of binary int' % (chr(prev),))
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-        else:
-            if c == _UNDERSCORE:
-                if prev == _UNDERSCORE or prev == ord('b') or prev == ord('B'):
-                    raise IonException('Underscore after %s' % (chr(prev),))
-            else:
-                if c not in _BINARY_DIGITS:
-                    _illegal_character(c, ctx)
-                else:
-                    val.append(c)
+def _generate_radix_int_handler(radix_indicators, charset):
+    @coroutine
+    def radix_int_handler(c, ctx):
+        assert c in radix_indicators
+        assert (len(ctx.value) == 1 and ctx.value[0] == ord('0')) \
+               or (len(ctx.value) == 2 and ctx.value[0] == ord('-') and ctx.value[1] == ord('0'))
+        assert ctx.ion_type == IonType.INT
+        val = ctx.value
+        val.append(c)
         prev = c
-        c, _ = yield trans
-
-
-@coroutine
-def hex_int_handler(c, ctx):
-    assert c == ord('x') or c == ord('X')
-    assert (len(ctx.value) == 1 and ctx.value[0] == ord('0')) \
-        or (len(ctx.value) == 2 and ctx.value[0] == ord('-') and ctx.value[1] == ord('0'))
-    assert ctx.ion_type == IonType.INT
-    val = ctx.value
-    val.append(c)
-    prev = c
-    c, self = yield
-    if c == _UNDERSCORE:
-        raise IonException('Underscore after radix')
-    trans = (Transition(None, self), None)
-    while True:
-        if c in _NUMBER_TERMINATORS:
-            if prev == _UNDERSCORE or prev == ord('x') or prev == ord('X'):
-                raise IonException('%s at end of hex int' % (chr(prev),))
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-        else:
-            if c == _UNDERSCORE:
-                if prev == _UNDERSCORE or prev == ord('x') or prev == ord('X'):
-                    raise IonException('Underscore after %s' % (chr(prev),))
+        c, self = yield
+        if c == _UNDERSCORE:
+            raise IonException('Underscore after radix')
+        trans = (Transition(None, self), None)
+        while True:
+            if c in _NUMBER_TERMINATORS:
+                if prev == _UNDERSCORE or prev in radix_indicators:
+                    raise IonException('%s at end of int' % (chr(prev),))
+                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
             else:
-                if c not in _HEX_DIGITS:
-                    _illegal_character(c, ctx)
+                if c == _UNDERSCORE:
+                    if prev == _UNDERSCORE or prev in radix_indicators:
+                        raise IonException('Underscore after %s' % (chr(prev),))
                 else:
-                    val.append(c)
-        prev = c
-        c, _ = yield trans
+                    if c not in charset:
+                        _illegal_character(c, ctx)
+                    else:
+                        val.append(c)
+            prev = c
+            c, _ = yield trans
+    return radix_int_handler
+
+
+binary_int_handler = _generate_radix_int_handler(_BINARY_RADIX, _BINARY_DIGITS)
+hex_int_handler = _generate_radix_int_handler(_HEX_RADIX, _HEX_DIGITS)
 
 
 @coroutine
