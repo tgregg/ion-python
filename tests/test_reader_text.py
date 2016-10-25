@@ -64,6 +64,11 @@ _BAD = (
     (b'{foo::bar:baz}', e_start_struct()),
     (b'[abc, , 123]', e_start_list(), e_symbol(value=b'abc')),
     (b'{foo:bar, ,}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
+    (b'{true:123}', e_start_struct()),
+    (b'{false:123}', e_start_struct()),
+    (b'{+inf:123}', e_start_struct()),
+    (b'{-inf:123}', e_start_struct()),
+    (b'{nan:123}', e_start_struct()),
     (b'(1.23.)', e_start_sexp()),
     (b'/ ',)
 )
@@ -90,6 +95,9 @@ _INCOMPLETE = (
     (b'1.2',),
     (b'1.2e',),
     (b'1.2e-',),
+    (b'+inf',),  # Might be followed by more characters, making it invalid at the top level.
+    (b'-inf',),
+    (b'nan',),
     (b'1.2d',),
     (b'1.2d3',),
     (b'1_',),
@@ -98,6 +106,7 @@ _INCOMPLETE = (
     (b'2000-01',),
     (b'"abc',),
     (b'false',),  # Might be a symbol with more characters.
+    (b'true',),
     (b'null.string',),  # Might be a symbol with more characters.
     (b'/',),
     (b'/*',),
@@ -176,6 +185,7 @@ _UNSPACED_SEXPS = (
     (b'(false)',) + _good_sexp(e_bool(False)),
     (b'(-inf)',) + _good_sexp(e_float(b'-inf')),
     (b'(+inf)',) + _good_sexp(e_float(b'+inf')),
+    (b'(nan)',) + _good_sexp(e_float(b'nan')),
     (b'(-inf+inf)',) + _good_sexp(e_float(b'-inf'), e_float(b'+inf')),
     # TODO the inf tests do not match ion-java's behavior. They should be reconciled. I believe this is more correct.
     (b'(- -inf-inf-in-infs-)',) + _good_sexp(
@@ -185,6 +195,14 @@ _UNSPACED_SEXPS = (
     (b'(+ +inf+inf+in+infs+)',) + _good_sexp(
         e_symbol(b'+'), e_float(b'+inf'), e_float(b'+inf'), e_symbol(b'+'),
         e_symbol(b'in'), e_symbol(b'+'), e_symbol(b'infs'), e_symbol(b'+')
+    ),
+    (b'(nan-nan+nan)',) + _good_sexp(
+        e_float(b'nan'), e_symbol(b'-'), e_float(b'nan'), e_symbol(b'+'),
+        e_float(b'nan')
+    ),
+    (b'(nans-inf+na-)',) + _good_sexp(
+        e_symbol(b'nans'), e_float(b'-inf'), e_symbol(b'+'),
+        e_symbol(b'na'), e_symbol(b'-')
     ),
     (b'({}()zar::[])',) + _good_sexp(
         e_start_struct(), e_end_struct(),
@@ -219,7 +237,7 @@ _GOOD_SCALARS = (
     (b'-0.0e-1', e_float(_b(b'-0.0e-1'))),
     (b'-inf', e_float(_b(b'-inf'))),
     (b'+inf', e_float(_b(b'+inf'))),
-    # TODO +inf, -inf, nan
+    (b'nan', e_float(_b(b'nan'))),
 
     (b'null.decimal', e_decimal()),
     (b'0.0', e_decimal(_b(b'0.0'))),

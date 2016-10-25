@@ -605,10 +605,11 @@ def null_handler(c, ctx):
 
 _TRUE_SEQUENCE = tuple(ord(x) for x in 'rue')
 _FALSE_SEQUENCE = tuple(ord(x) for x in 'alse')
+_NAN_SEQUENCE = tuple(ord(x) for x in 'an')
 
 
 @coroutine
-def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
+def symbol_or_keyword_handler(c, ctx, is_field_name=False):
     in_sexp = ctx.container.ion_type is IonType.SEXP
     if c not in _IDENTIFIER_STARTS:
         if in_sexp and c in _OPERATORS:
@@ -619,6 +620,7 @@ def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
     val = ctx.value
     val.append(c)
     maybe_null = c == ord('n')
+    maybe_nan = maybe_null
     maybe_true = c == ord('t')
     maybe_false = c == ord('f')
     c, self = yield
@@ -646,6 +648,23 @@ def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
                     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
                 else:
                     maybe_null = False
+        if maybe_nan:
+            if match_index < len(_NAN_SEQUENCE):
+                maybe_nan = c == _NAN_SEQUENCE[match_index]
+            else:
+                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                    if is_field_name:
+                        raise IonException("nan keyword as field name not allowed")
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, val)
+                elif c == ord(':'):
+                    if is_field_name:
+                        raise IonException("nan keyword as field name not allowed")
+                    else:
+                        raise IonException("Illegal character in symbol: :")  # TODO
+                elif in_sexp and c in _OPERATORS:
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, val)
+                else:
+                    maybe_nan = False
         elif maybe_true:
             if match_index < len(_TRUE_SEQUENCE):
                 maybe_true = c == _TRUE_SEQUENCE[match_index]
@@ -680,7 +699,7 @@ def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
                     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, False)
                 else:
                     maybe_false = False
-        if maybe_null or maybe_true or maybe_false:
+        if maybe_null or maybe_nan or maybe_true or maybe_false:
             val.append(c)
             match_index += 1
         else:
@@ -922,7 +941,7 @@ def field_name_handler(c, ctx):
     elif c == ord('"'):
         trans = ctx.immediate_transition(string_handler(c, ctx, is_field_name=True))
     elif c in _IDENTIFIER_STARTS:
-        trans = ctx.immediate_transition(symbol_or_null_or_bool_handler(c, ctx, is_field_name=True))
+        trans = ctx.immediate_transition(symbol_or_keyword_handler(c, ctx, is_field_name=True))
     else:
         raise IonException("Illegal character %s in field name." % (chr(c), ))
     yield trans
@@ -1028,7 +1047,7 @@ _STRUCT_OR_LOB_TABLE = defaultdict(
 _STRUCT_OR_LOB_TABLE[ord('{')] = lob_handler
 
 _START_TABLE = defaultdict(
-    lambda: symbol_or_null_or_bool_handler
+    lambda: symbol_or_keyword_handler
 )
 _START_TABLE[ord('-')] = number_negative_start_handler
 _START_TABLE[ord('+')] = positive_inf_or_sexp_plus_handler
