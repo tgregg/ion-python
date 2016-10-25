@@ -38,6 +38,8 @@ _BAD = (
     (b'1_e1',),
     (b'1e_1',),
     (b'1e1_',),
+    (b'-infs',),
+    (b'-in',),
     (b'1._0',),
     (b'1_.0',),
     (b'-_1',),
@@ -170,6 +172,12 @@ _UNSPACED_SEXPS = (
     (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=b'%-', annotations=(b'foo',)), e_symbol(b'bar')),
     (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(b'.'), e_symbol(b'False'), e_symbol(b'+')),
     (b'(false)',) + _good_sexp(e_bool(False)),
+    (b'(-inf)',) + _good_sexp(e_float(b'-inf')),
+    # TODO the inf tests do not match ion-java's behavior. They should be reconciled. I believe this is more correct.
+    (b'(- -inf-inf-in-infs-)',) + _good_sexp(
+        e_symbol(b'-'), e_float(b'-inf'), e_float(b'-inf'), e_symbol(b'-'),
+        e_symbol(b'in'), e_symbol(b'-'), e_symbol(b'infs'), e_symbol(b'-')
+    ),
     (b'({}()zar::[])',) + _good_sexp(
         e_start_struct(), e_end_struct(),
         e_start_sexp(), e_end_sexp(),
@@ -201,6 +209,7 @@ _GOOD_SCALARS = (
     (b'null.float', e_float()),
     (b'0.0e1', e_float(_b(b'0.0e1'))),
     (b'-0.0e-1', e_float(_b(b'-0.0e-1'))),
+    (b'-inf', e_float(_b(b'-inf'))),
     # TODO +inf, -inf, nan
 
     (b'null.decimal', e_decimal()),

@@ -696,19 +696,47 @@ def symbol_or_null_or_bool_handler(c, ctx, is_field_name=False):
         c, _ = yield trans
 
 
+_INF_SEQUENCE = tuple(ord(x) for x in 'inf')
+
 @coroutine
 def sexp_hyphen_handler(c, ctx):
     assert ctx.value[0] == ord('-')
     assert c not in _DIGITS
     ctx.queue.unread(c)
-    yield
+    next_ctx = ctx
+    _, self = yield
+    assert c == _
+    maybe_inf = True
+    match_index = 0
+    trans = (Transition(None, self), None)
+    while True:
+        if maybe_inf:
+            if match_index < len(_INF_SEQUENCE):
+                maybe_inf = c == _INF_SEQUENCE[match_index]
+            else:
+                if c in _NUMBER_END_SEQUENCE[0] or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
+                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, bytearray(b'-inf'))
+                else:
+                    maybe_inf = False
+        if maybe_inf:
+            match_index += 1
+        else:
+            if match_index > 0:
+                next_ctx = ctx.derive_child_context(ctx.whence)
+                for ch in _INF_SEQUENCE[0:match_index]:
+                    next_ctx.value.append(ch)
+            break
+        c, self = yield trans
     if ctx.container.ion_type is not IonType.SEXP:
         raise IonException("Illegal character following -")  # TODO
-    ctx = ctx.derive_ion_type(IonType.SYMBOL)
-    if c in _OPERATORS:
-        yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
-    else:
+    if match_index == 0:
+        if c in _OPERATORS:
+            yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
+    next_immediate = next_ctx.immediate_transition(symbol_handler(c, next_ctx))
+    ctx = ctx.derive_ion_type(IonType.SYMBOL)
+    yield [ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0]] \
+        + [next_immediate[0]], next_ctx
 
 
 @coroutine
@@ -759,8 +787,17 @@ _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
 
 @coroutine
 def symbol_handler(c, ctx, is_field_name=False):
-    assert c in _IDENTIFIER_CHARACTERS
     in_sexp = ctx.container.ion_type is IonType.SEXP
+    if c not in _IDENTIFIER_CHARACTERS:
+        if in_sexp and c in _OPERATORS:
+            c_next, _ = yield
+            ctx.queue.unread(c_next)
+            assert ctx.value
+            next_ctx = ctx.derive_child_context(ctx.whence)
+            next_immediate = next_ctx.immediate_transition(operator_symbol_handler(c, next_ctx))
+            yield [ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0]] \
+                + [next_immediate[0]], next_ctx
+        raise IonException("Illegal character %s in symbol." % (chr(c), ))  # TODO
     val = ctx.value
     val.append(c)
     prev = c
@@ -1267,13 +1304,20 @@ def _container_handler(c, ctx):
                     c = None
                     container_start = False
                 trans, child_context = handler.send((c, handler))
+                next_transition = None
+                if not hasattr(trans, 'event'):
+                    # Transitions are iterable, so instead of checking to see if the returned value is iterable, we have
+                    # to check to see if it's a simple Transition rather than a sequence of Transitions.
+                    assert len(trans) == 2
+                    next_transition = trans[1]
+                    trans = trans[0]
                 if trans.event is not None:
                     # This child value is finished. c is now the first character in the next value or sequence.
                     # Hence, a new character should not be read; it should be provided to the handler for the next
                     # child context.
-                    assert child_context is None
                     yield trans
                     if trans.event.ion_type.is_container and trans.event.event_type is not IonEventType.SCALAR:
+                        assert next_transition is None
                         yield Transition(
                             None,
                             _container_handler(c, ctx.derive_container_context(trans.event.ion_type, self))
@@ -1284,34 +1328,36 @@ def _container_handler(c, ctx):
                             read_next = False
                     else:
                         read_next = False
-
                     complete = ctx.depth == 0
                     delimiter_required = not ((not ctx.container.ion_type) or ctx.container.ion_type is IonType.SEXP)
-                    break
-                else:
-                    if self is trans.delegate:
-                        in_comment = isinstance(trans, _CommentTransition)
-                        if is_field_name:
-                            if c == ord(':') or not (c == ord('/') and in_comment):
-                                read_next = False
-                                break
-                        elif child_context and child_context.pending_symbol is not None:
-                            if not in_comment:  # TODO check -- closing slash as above?
-                                read_next = False
-                                break
-                        elif in_comment:
-                            # There isn't a pending field name or pending annotations. If this is at the top level,
-                            # it may end the stream.
-                            complete = ctx.depth == 0
-                        # This happens at the end of a comment within this container, or when an annotation has been
-                        # found. In both cases, an event should not be emitted. Read the next character and continue.
-                        if len(queue) > 0:
-                            c = queue.read_byte()
-                            read_next = False
+                    if next_transition is None:
                         break
-                    # This is either the same handler, or an immediate transition to a new handler if
-                    # the type has been narrowed down. In either case, the next character must be read.
-                    handler = trans.delegate
+                    else:
+                        trans = next_transition
+                elif self is trans.delegate:
+                    assert next_transition is None
+                    in_comment = isinstance(trans, _CommentTransition)
+                    if is_field_name:
+                        if c == ord(':') or not (c == ord('/') and in_comment):
+                            read_next = False
+                            break
+                    elif child_context and child_context.pending_symbol is not None:
+                        if not in_comment:  # TODO check -- closing slash as above?
+                            read_next = False
+                            break
+                    elif in_comment:
+                        # There isn't a pending field name or pending annotations. If this is at the top level,
+                        # it may end the stream.
+                        complete = ctx.depth == 0
+                    # This happens at the end of a comment within this container, or when an annotation has been
+                    # found. In both cases, an event should not be emitted. Read the next character and continue.
+                    if len(queue) > 0:
+                        c = queue.read_byte()
+                        read_next = False
+                    break
+                # This is either the same handler, or an immediate transition to a new handler if
+                # the type has been narrowed down. In either case, the next character must be read.
+                handler = trans.delegate
             if read_next and len(queue) == 0:
                 # This will cause the next loop to fall through to the else branch below to ask for more input.
                 c = None
