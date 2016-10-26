@@ -568,7 +568,7 @@ def string_handler(c, ctx, is_field_name=False):
     elif not is_clob:
         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
     else:
-        yield ctx.immediate_transition(clob_handler(c, ctx))
+        yield ctx.immediate_transition(clob_end_handler(c, ctx))
 
 
 @coroutine
@@ -642,10 +642,10 @@ def triple_quote_string_handler(c, ctx):
                     if not is_clob:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                     else:
-                        trans = ctx.immediate_transition(clob_handler(c, ctx))
+                        trans = ctx.immediate_transition(clob_end_handler(c, ctx))
                 elif c not in _WHITESPACE:
                     if is_clob:
-                        trans = ctx.immediate_transition(clob_handler(c, ctx))
+                        trans = ctx.immediate_transition(clob_end_handler(c, ctx))
                     elif c == _SLASH:
                         trans = ctx.immediate_transition(comment_handler(c, ctx, self))
                     else:
@@ -679,7 +679,7 @@ def two_single_quotes_handler(c, ctx, is_field_name):
 
 
 @coroutine
-def null_handler(c, ctx):
+def typed_null_handler(c, ctx):
     assert c == _DOT
     c, self = yield
     nxt = _NULL_STARTS
@@ -737,7 +737,7 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 elif c == _DOT:
                     if is_field_name:
                         raise IonException("Illegal character in field name: .")  # TODO
-                    yield ctx.immediate_transition(null_handler(c, ctx))
+                    yield ctx.immediate_transition(typed_null_handler(c, ctx))
                 elif c == _COLON:
                     if is_field_name:
                         raise IonException("Null field name not allowed")
@@ -949,7 +949,7 @@ def struct_or_lob_handler(c, ctx):
 
 
 @coroutine
-def lob_handler(c, ctx):
+def lob_start_handler(c, ctx):
     assert c == _OPEN_BRACE
     c, self = yield
     trans = (Transition(None, self), None)
@@ -970,56 +970,42 @@ def lob_handler(c, ctx):
             if quotes == 3:
                 yield ctx.immediate_transition(triple_quote_string_handler(c, ctx))
         else:
-            yield ctx.immediate_transition(blob_handler(c, ctx))
+            yield ctx.immediate_transition(blob_end_handler(c, ctx))
         c, _ = yield trans
 
 
-@coroutine
-def blob_handler(c, ctx):
-    # Note: all validation of base 64 characters will be left to the base64 library in the parsing phase. It could
-    # be partly done here in the lexer by checking each character against the base64 alphabet and making sure the blob
-    # ends with the correct number of '=', but this is simpler.
-    val = ctx.value
-    if c != _CLOSE_BRACE and c not in _WHITESPACE:
-        val.append(c)
-    prev = c
-    c, self = yield
-    trans = (Transition(None, self), None)
-    done = False
-    while not done:
-        if c in _WHITESPACE:
-            if prev == _CLOSE_BRACE:
-                raise IonException("Illegal character in blob; expected }")  # TODO
-        else:
-            if c != _CLOSE_BRACE:
-                val.append(c)
-            elif prev == _CLOSE_BRACE:
-                done = True
+def _generate_lob_end_handler(ion_type, action):
+    assert ion_type is IonType.BLOB or ion_type is IonType.CLOB
+
+    @coroutine
+    def lob_end_handler(c, ctx):
+        val = ctx.value
+        if c != _CLOSE_BRACE and c not in _WHITESPACE:
+            action(c, ctx)
         prev = c
-        c, _ = yield trans
-    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BLOB, val)
+        c, self = yield
+        trans = (Transition(None, self), None)
+        done = False
+        while not done:
+            if c in _WHITESPACE:
+                if prev == _CLOSE_BRACE:
+                    raise IonException("Illegal character in blob; expected }")  # TODO
+            elif c == _CLOSE_BRACE:
+                if prev == _CLOSE_BRACE:
+                    done = True
+            else:
+                action(c, ctx)
+            prev = c
+            c, _ = yield trans
+        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, val)
+    return lob_end_handler
 
 
-@coroutine
-def clob_handler(c, ctx):
-    if c != _CLOSE_BRACE and c not in _WHITESPACE:
-        raise IonException("Illegal character in clob")  # TODO
-    prev = c
-    c, self = yield
-    trans = (Transition(None, self), None)
-    done = False
-    while not done:
-        if c in _WHITESPACE:
-            if prev == _CLOSE_BRACE:
-                raise IonException("Illegal character in blob; expected }")  # TODO
-        elif c == _CLOSE_BRACE:
-            if prev == _CLOSE_BRACE:
-                done = True
-        else:
-            raise IonException("Illegal character in clob")  # TODO
-        prev = c
-        c, _ = yield trans
-    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.CLOB, ctx.value)
+# Note: all validation of base 64 characters will be left to the base64 library in the parsing phase. It could
+# be partly done here in the lexer by checking each character against the base64 alphabet and making sure the blob
+# ends with the correct number of '=', but this is simpler.
+blob_end_handler = _generate_lob_end_handler(IonType.BLOB, lambda c, ctx: ctx.value.append(c))
+clob_end_handler = _generate_lob_end_handler(IonType.CLOB, _illegal_character)
 
 
 single_quoted_field_name_handler = partial(string_or_symbol_handler, is_field_name=True)
@@ -1028,6 +1014,8 @@ unquoted_field_name_handler = partial(symbol_or_keyword_handler, is_field_name=T
 
 
 def _generate_container_start_handler(ion_type, before_yield=lambda c, ctx: None):
+    assert ion_type.is_container
+
     @coroutine
     def container_start_handler(c, ctx):
         before_yield(c, ctx)
@@ -1100,7 +1088,7 @@ _NEGATIVE_TABLE = _whitelist(
 )
 
 _STRUCT_OR_LOB_TABLE = _whitelist({
-    _OPEN_BRACE: lob_handler
+    _OPEN_BRACE: lob_start_handler
 }, struct_handler)
 
 
