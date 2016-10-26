@@ -71,6 +71,7 @@ _HEX_RADIX = _seq('Xx')
 _HEX_DIGITS = _DIGITS + _seq('abcdef')
 _DECIMAL_EXPS = _seq('Dd')
 _FLOAT_EXPS = _seq('Ee')
+_TIMESTAMP_YEAR_DELIMITERS = _seq('-T')
 _TIMESTAMP_DELIMITERS = _seq('-:+.')
 _TIMESTAMP_OFFSET_INDICATORS = _seq('Z+-')
 _IDENTIFIER_STARTS = _seq(string.ascii_letters) + (_seq('$_'))
@@ -78,8 +79,27 @@ _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
 _OPERATORS = _seq('!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no, java: no, grammar: yes
 
 _UNDERSCORE = ord('_')
+_DOT = ord('.')
+_COMMA = ord(',')
+_COLON = ord(':')
+_SLASH = ord('/')
+_ASTERISK = ord('*')
+_BACKSLASH = ord('\\')
+_NEWLINE = ord('\n')
+_DOUBLE_QUOTE = ord('"')
+_SINGLE_QUOTE = ord('\'')
+_PLUS = ord('+')
 _MINUS = ord('-')
+_HYPHEN = _MINUS
+_T = ord('T')
+_Z = ord('Z')
 _ZERO = _DIGITS[0]
+_OPEN_BRACE = ord('{')
+_OPEN_BRACKET = ord('[')
+_OPEN_PAREN = ord('(')
+_CLOSE_BRACE = ord('}')
+_CLOSE_BRACKET = ord(']')
+_CLOSE_PAREN = ord(')')
 
 _TRUE_SEQUENCE = _seq('rue')
 _FALSE_SEQUENCE = _seq('alse')
@@ -148,9 +168,9 @@ class _Container(record(
     """TODO"""
 
 _C_TOP_LEVEL = _Container((), (), None)
-_C_STRUCT = _Container((ord('}'),), (ord(','),), IonType.STRUCT)
-_C_LIST = _Container((ord(']'),), (ord(','),), IonType.LIST)
-_C_SEXP = _Container((ord(')'),), (), IonType.SEXP)
+_C_STRUCT = _Container((_CLOSE_BRACE,), (_COMMA,), IonType.STRUCT)
+_C_LIST = _Container((_CLOSE_BRACKET,), (_COMMA,), IonType.LIST)
+_C_SEXP = _Container((_CLOSE_PAREN,), (), IonType.SEXP)
 
 
 class _HandlerContext(record(
@@ -380,7 +400,7 @@ def _generate_coefficient_handler(trans_table, assertion=lambda c, ctx: True, io
         if prev == _UNDERSCORE:
             raise IonException('Underscore before %s' % (chr(c),))
         return ctx.immediate_transition(trans_table[c](c, ctx))
-    return _generate_numeric_handler(_DIGITS, transition, assertion, (ord('.'),),
+    return _generate_numeric_handler(_DIGITS, transition, assertion, (_DOT,),
                                      ion_type=ion_type, append_first_if_not=append_first_if_not)
 
 
@@ -406,12 +426,12 @@ _FRACTIONAL_NUMBER_TABLE = _whitelist(
 )
 
 fractional_number_handler = _generate_coefficient_handler(
-    _FRACTIONAL_NUMBER_TABLE, assertion=lambda c, ctx: c == ord('.'), ion_type=IonType.DECIMAL)
+    _FRACTIONAL_NUMBER_TABLE, assertion=lambda c, ctx: c == _DOT, ion_type=IonType.DECIMAL)
 
 _WHOLE_NUMBER_TABLE = _whitelist(
     _merge_dicts(
         {
-            ord('.'): fractional_number_handler,
+            _DOT: fractional_number_handler,
         },
         _FRACTIONAL_NUMBER_TABLE
     )
@@ -432,7 +452,7 @@ def timestamp_zero_start_handler(c, ctx):
     c, self = yield
     trans = (Transition(None, self), None)
     while True:
-        if c == _MINUS or c == ord('T'):
+        if c in _TIMESTAMP_YEAR_DELIMITERS:
             trans = ctx.immediate_transition(timestamp_handler(c, ctx))
         elif c in _DIGITS:
             val.append(c)
@@ -454,7 +474,7 @@ def timestamp_handler(c, ctx):
         OFF_HOUR = 7
         OFF_MINUTE = 8
 
-    assert c == ord('T') or c == _MINUS
+    assert c in _TIMESTAMP_YEAR_DELIMITERS
     if len(ctx.value) != 4:  # or should this be left to the parser?
         raise IonException('Timestamp year is %d digits; expected 4' % (len(ctx.value),))
     ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
@@ -465,7 +485,7 @@ def timestamp_handler(c, ctx):
     trans = (Transition(None, self), None)
     state = State.YEAR
     nxt = _DIGITS
-    if prev == ord('T'):
+    if prev == _T:
         nxt += _NUMBER_TERMINATORS
     while True:
         if c not in nxt:
@@ -474,32 +494,32 @@ def timestamp_handler(c, ctx):
         if c in _NUMBER_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         else:
-            if c == ord('Z'):
+            if c == _Z:
                 nxt = _NUMBER_TERMINATORS
-            elif c == ord('T'):
+            elif c == _T:
                 nxt = _NUMBER_TERMINATORS + _DIGITS
             elif c in _TIMESTAMP_DELIMITERS:
                 nxt = _DIGITS
             elif c in _DIGITS:
-                if prev == ord('+') or (state > State.MONTH and prev == _MINUS):
+                if prev == _PLUS or (state > State.MONTH and prev == _HYPHEN):
                     state = State.OFF_HOUR
-                elif prev in (_TIMESTAMP_DELIMITERS + (ord('T'),)):
+                elif prev in (_TIMESTAMP_DELIMITERS + (_T,)):
                     state = State[state + 1]
                 elif prev in _DIGITS:
                     if state == State.MONTH:
-                        nxt = (_MINUS, ord('T'))
+                        nxt = _TIMESTAMP_YEAR_DELIMITERS
                     elif state == State.DAY:
-                        nxt = (ord('T'),) + _NUMBER_TERMINATORS
+                        nxt = (_T,) + _NUMBER_TERMINATORS
                     elif state == State.HOUR:
-                        nxt = (ord(':'),)
+                        nxt = (_COLON,)
                     elif state == State.MINUTE:
-                        nxt = _TIMESTAMP_OFFSET_INDICATORS + (ord(':'),)
+                        nxt = _TIMESTAMP_OFFSET_INDICATORS + (_COLON,)
                     elif state == State.SECOND:
-                        nxt = _TIMESTAMP_OFFSET_INDICATORS + (ord('.'),)
+                        nxt = _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
                     elif state == State.FRACTIONAL:
-                        nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS + (ord('.'),)
+                        nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
                     elif state == State.OFF_HOUR:
-                        nxt = (ord(':'),) + _NUMBER_TERMINATORS
+                        nxt = (_COLON,) + _NUMBER_TERMINATORS
                     elif state == State.OFF_MINUTE:
                         nxt = _NUMBER_TERMINATORS
                     else:
@@ -514,7 +534,7 @@ def timestamp_handler(c, ctx):
 @coroutine
 def string_handler(c, ctx, is_field_name=False):
     # TODO parse unicode escapes (in parser)
-    assert c == ord('"')
+    assert c == _DOUBLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
     if not is_clob and not is_field_name:
         ctx = ctx.derive_ion_type(IonType.STRING)
@@ -529,7 +549,7 @@ def string_handler(c, ctx, is_field_name=False):
     done = False
     while not done:
         # TODO error on disallowed escape sequences
-        if c == ord('"') and prev != ord('\\'):
+        if c == _DOUBLE_QUOTE and prev != _BACKSLASH:
             done = True
         else:
             # TODO should a backslash be appended?
@@ -546,11 +566,11 @@ def string_handler(c, ctx, is_field_name=False):
 
 @coroutine
 def comment_handler(c, ctx, whence):
-    assert c == ord('/')
+    assert c == _SLASH
     c, self = yield
-    if c == ord('/'):
+    if c == _SLASH:
         block_comment = False
-    elif c == ord('*'):
+    elif c == _ASTERISK:
         block_comment = True
     else:
         raise IonException("Illegal character sequence '/%s'" % (chr(c),))
@@ -560,28 +580,28 @@ def comment_handler(c, ctx, whence):
     while not done:
         c, _ = yield trans
         if block_comment:
-            if prev == ord('*') and c == ord('/'):
+            if prev == _ASTERISK and c == _SLASH:
                 done = True
             prev = c
         else:
-            if c == ord('\n'):
+            if c == _NEWLINE:
                 done = True
     yield (_CommentTransition(None, whence), ctx)
 
 
 @coroutine
 def sexp_slash_handler(c, ctx):
-    assert c == ord('/')
+    assert c == _SLASH
     c, self = yield
     ctx.queue.unread(c)
-    if c == ord('*') or c == ord('/'):
-        yield ctx.immediate_transition(comment_handler(ord('/'), ctx, ctx.whence))
+    if c == _ASTERISK or c == _SLASH:
+        yield ctx.immediate_transition(comment_handler(_SLASH, ctx, ctx.whence))
     else:
-        yield ctx.immediate_transition(operator_symbol_handler(ord('/'), ctx))
+        yield ctx.immediate_transition(operator_symbol_handler(_SLASH, ctx))
 
 @coroutine
 def triple_quote_string_handler(c, ctx):
-    assert c == ord('\'')
+    assert c == _SINGLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
     if not is_clob:
         ctx = ctx.derive_ion_type(IonType.STRING)
@@ -594,7 +614,7 @@ def triple_quote_string_handler(c, ctx):
     while True:
         trans = here
         # TODO error on disallowed escape sequences
-        if c == ord('\'') and prev != ord('\\'):
+        if c == _SINGLE_QUOTE and prev != _BACKSLASH:
             quotes += 1
             if quotes == 3:
                 in_data = not in_data
@@ -603,14 +623,14 @@ def triple_quote_string_handler(c, ctx):
             if in_data:
                 # Any quotes found in the meantime are part of the data
                 for i in range(quotes):
-                    val.append(ord('\''))
+                    val.append(_SINGLE_QUOTE)
                 quotes = 0
                 # TODO should a backslash be appended - why is Java inconsistent between double- and triple-quoted?
-                if c != ord('\\'):
+                if c != _BACKSLASH:
                     val.append(c)
             else:
                 if quotes > 0:
-                    ctx.queue.unread(tuple([b'\'']*quotes + [c]))  # un-read the skipped quotes AND c, which will be consumed again later
+                    ctx.queue.unread(tuple([chr(_SINGLE_QUOTE)]*quotes + [c]))  # un-read the skipped quotes AND c, which will be consumed again later
                     if not is_clob:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                     else:
@@ -618,7 +638,7 @@ def triple_quote_string_handler(c, ctx):
                 elif c not in _WHITESPACE:
                     if is_clob:
                         trans = ctx.immediate_transition(clob_handler(c, ctx))
-                    elif c == ord('/'):
+                    elif c == _SLASH:
                         trans = ctx.immediate_transition(comment_handler(c, ctx, self))
                     else:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
@@ -628,10 +648,10 @@ def triple_quote_string_handler(c, ctx):
 
 @coroutine
 def string_or_symbol_handler(c, ctx, is_field_name=False):
-    assert c == ord('\'')
+    assert c == _SINGLE_QUOTE
     #ctx = ctx.derive_ion_type(IonType.SYMBOL)
     c, self = yield
-    if c == ord('\''):
+    if c == _SINGLE_QUOTE:
         yield ctx.immediate_transition(two_single_quotes_handler(c, ctx, is_field_name))
     else:
         yield ctx.immediate_transition(quoted_symbol_handler(c, ctx, is_field_name))
@@ -639,9 +659,9 @@ def string_or_symbol_handler(c, ctx, is_field_name=False):
 
 @coroutine
 def two_single_quotes_handler(c, ctx, is_field_name):
-    assert c == ord('\'')
+    assert c == _SINGLE_QUOTE
     c, self = yield
-    if c == ord('\''):
+    if c == _SINGLE_QUOTE:
         if is_field_name:
             raise IonException("Expected field name, got triple-quoted string")
         yield ctx.immediate_transition(triple_quote_string_handler(c, ctx))
@@ -653,7 +673,7 @@ def two_single_quotes_handler(c, ctx, is_field_name):
 
 @coroutine
 def null_handler(c, ctx):
-    assert c == ord('.')
+    assert c == _DOT
     c, self = yield
     nxt = _NULL_STARTS
     i = 0
@@ -703,15 +723,15 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
             if match_index < len(_NULL_SEQUENCE.sequence):
                 maybe_null = c == _NULL_SEQUENCE[match_index]
             else:
-                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
                     if is_field_name:
                         raise IonException("Null field name not allowed")
                     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
-                elif c == ord('.'):
+                elif c == _DOT:
                     if is_field_name:
                         raise IonException("Illegal character in field name: .")  # TODO
                     yield ctx.immediate_transition(null_handler(c, ctx))
-                elif c == ord(':'):
+                elif c == _COLON:
                     if is_field_name:
                         raise IonException("Null field name not allowed")
                     else:
@@ -724,11 +744,11 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
             if match_index < len(_NAN_SEQUENCE):
                 maybe_nan = c == _NAN_SEQUENCE[match_index]
             else:
-                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
                     if is_field_name:
                         raise IonException("nan keyword as field name not allowed")
                     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, val)
-                elif c == ord(':'):
+                elif c == _COLON:
                     if is_field_name:
                         raise IonException("nan keyword as field name not allowed")
                     else:
@@ -741,11 +761,11 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
             if match_index < len(_TRUE_SEQUENCE):
                 maybe_true = c == _TRUE_SEQUENCE[match_index]
             else:
-                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
                     if is_field_name:
                         raise IonException("true keyword as field name not allowed")
                     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, True)
-                elif c == ord(':'):
+                elif c == _COLON:
                     if is_field_name:
                         raise IonException("true keyword as field name not allowed")
                     else:
@@ -758,11 +778,11 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
             if match_index < len(_FALSE_SEQUENCE):
                 maybe_false = c == _FALSE_SEQUENCE[match_index]
             else:
-                if c in _WHITESPACE or c == ord('/') or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
                     if is_field_name:
                         raise IonException("false keyword as field name not allowed")
                     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, False)
-                elif c == ord(':'):
+                elif c == _COLON:
                     if is_field_name:
                         raise IonException("false keyword as field name not allowed")
                     else:
@@ -775,7 +795,7 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
             val.append(c)
             match_index += 1
         else:
-            if c in _WHITESPACE or c == ord('/') or c == ord(':'):
+            if c in _WHITESPACE or c == _SLASH or c == _COLON:
                 # This might be an annotation or a field name
                 ctx = ctx.derive_pending_symbol(val)
                 trans = ctx.immediate_transition(ctx.whence)
@@ -834,8 +854,8 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
     return inf_or_operator_handler
 
 
-negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(b'-')
-positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(b'+', is_delegate=False)
+negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(chr(_HYPHEN))
+positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(chr(_PLUS), is_delegate=False)
 
 
 @coroutine
@@ -853,7 +873,7 @@ def operator_symbol_handler(c, ctx):
 
 @coroutine
 def quoted_symbol_handler(c, ctx, is_field_name):
-    assert c != ord('\'')
+    assert c != _SINGLE_QUOTE
     val = ctx.value
     val.append(c)
     prev = c
@@ -862,14 +882,14 @@ def quoted_symbol_handler(c, ctx, is_field_name):
     done = False
     while not done:
         # TODO error on disallowed escape sequences
-        if c == ord('\'') and prev != ord('\\'):
+        if c == _SINGLE_QUOTE and prev != _BACKSLASH:
             done = True
         else:
             # TODO should a backslash be appended?
             val.append(c)
         prev = c
         c, _ = yield trans
-    if is_field_name or c in _WHITESPACE or c == ord('/') or c == ord(':'):
+    if is_field_name or c in _WHITESPACE or c == _SLASH or c == _COLON:
         # This might be an annotation or a field name.
         ctx = ctx.derive_pending_symbol(val)
         yield ctx.immediate_transition(ctx.whence)
@@ -898,14 +918,14 @@ def symbol_handler(c, ctx, is_field_name=False):
     trans = (Transition(None, self), None)
     while True:
         if c not in _WHITESPACE:
-            if prev in _WHITESPACE or c in _NUMBER_TERMINATORS or c == ord(':') or (in_sexp and c in _OPERATORS):
+            if prev in _WHITESPACE or c in _NUMBER_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
                 break
             if c not in _IDENTIFIER_CHARACTERS:
                 raise IonException("Illegal character %s in symbol" % (chr(c), ))  # TODO
             val.append(c)
         prev = c
         c, _ = yield trans
-    if is_field_name or c in _WHITESPACE or c == ord('/') or c == ord(':'):
+    if is_field_name or c in _WHITESPACE or c == _SLASH or c == _COLON:
         # This might be an annotation or a field name.
         ctx = ctx.derive_pending_symbol(val)
         yield ctx.immediate_transition(ctx.whence)
@@ -916,14 +936,14 @@ def symbol_handler(c, ctx, is_field_name=False):
 
 @coroutine
 def struct_or_lob_handler(c, ctx):
-    assert c == ord('{')
+    assert c == _OPEN_BRACE
     c, self = yield
     yield ctx.immediate_transition(_STRUCT_OR_LOB_TABLE[c](c, ctx))
 
 
 @coroutine
 def lob_handler(c, ctx):
-    assert c == ord('{')
+    assert c == _OPEN_BRACE
     c, self = yield
     trans = (Transition(None, self), None)
     quotes = 0
@@ -931,12 +951,12 @@ def lob_handler(c, ctx):
         if c in _WHITESPACE:
             if quotes > 0:
                 raise IonException("Illegal character ' in blob")
-        elif c == ord('"'):
+        elif c == _DOUBLE_QUOTE:
             if quotes > 0:
                 raise IonException("Illegal character in clob")  # TODO
             ctx = ctx.derive_ion_type(IonType.CLOB)
             yield ctx.immediate_transition(string_handler(c, ctx))
-        elif c == ord('\''):
+        elif c == _SINGLE_QUOTE:
             if not quotes:
                 ctx = ctx.derive_ion_type(IonType.CLOB)
             quotes += 1
@@ -953,7 +973,7 @@ def blob_handler(c, ctx):
     # be partly done here in the lexer by checking each character against the base64 alphabet and making sure the blob
     # ends with the correct number of '=', but this is simpler.
     val = ctx.value
-    if c != ord('}') and c not in _WHITESPACE:
+    if c != _CLOSE_BRACE and c not in _WHITESPACE:
         val.append(c)
     prev = c
     c, self = yield
@@ -961,12 +981,12 @@ def blob_handler(c, ctx):
     done = False
     while not done:
         if c in _WHITESPACE:
-            if prev == ord('}'):
+            if prev == _CLOSE_BRACE:
                 raise IonException("Illegal character in blob; expected }")  # TODO
         else:
-            if c != ord('}'):
+            if c != _CLOSE_BRACE:
                 val.append(c)
-            elif prev == ord('}'):
+            elif prev == _CLOSE_BRACE:
                 done = True
         prev = c
         c, _ = yield trans
@@ -975,7 +995,7 @@ def blob_handler(c, ctx):
 
 @coroutine
 def clob_handler(c, ctx):
-    if c != ord('}') and c not in _WHITESPACE:
+    if c != _CLOSE_BRACE and c not in _WHITESPACE:
         raise IonException("Illegal character in clob")  # TODO
     prev = c
     c, self = yield
@@ -983,10 +1003,10 @@ def clob_handler(c, ctx):
     done = False
     while not done:
         if c in _WHITESPACE:
-            if prev == ord('}'):
+            if prev == _CLOSE_BRACE:
                 raise IonException("Illegal character in blob; expected }")  # TODO
-        elif c == ord('}'):
-            if prev == ord('}'):
+        elif c == _CLOSE_BRACE:
+            if prev == _CLOSE_BRACE:
                 done = True
         else:
             raise IonException("Illegal character in clob")  # TODO
@@ -1059,11 +1079,10 @@ _ZERO_START_TABLE = _whitelist(
 _NUMBER_OR_TIMESTAMP_TABLE = _whitelist(
     _merge_dicts(
         {
-            ord('-'): timestamp_handler,
-            ord('T'): timestamp_handler,
-            ord('_'): whole_number_handler,
+            _UNDERSCORE: whole_number_handler,
         },
-        _WHOLE_NUMBER_TABLE
+        _WHOLE_NUMBER_TABLE,
+        (_TIMESTAMP_YEAR_DELIMITERS, timestamp_handler)
     )
 )
 
@@ -1078,15 +1097,15 @@ _NEGATIVE_TABLE = _whitelist(
 )
 
 _STRUCT_OR_LOB_TABLE = _whitelist({
-    ord('{'): lob_handler
+    _OPEN_BRACE: lob_handler
 }, struct_handler)
 
 
 _FIELD_NAME_START_TABLE = _whitelist(
     _merge_dicts(
         {
-            ord('\''): single_quoted_field_name_handler,
-            ord('"'): double_quoted_field_name_handler,
+            _SINGLE_QUOTE: single_quoted_field_name_handler,
+            _DOUBLE_QUOTE: double_quoted_field_name_handler,
         },
         (_IDENTIFIER_STARTS, unquoted_field_name_handler)
     ),
@@ -1096,15 +1115,15 @@ _FIELD_NAME_START_TABLE = _whitelist(
 _VALUE_START_TABLE = _whitelist(
     _merge_dicts(
         {
-            ord('-'): number_negative_start_handler,
-            ord('+'): positive_inf_or_sexp_plus_handler,
-            ord('0'): number_zero_start_handler,
-            ord('{'): struct_or_lob_handler,
-            ord('('): sexp_handler,
-            ord('['): list_handler,
-            ord('\''): string_or_symbol_handler,
-            ord('\"'): string_handler,
-            ord('/'): sexp_slash_handler,  # Comments are handled as a special case, not through _START_TABLE
+            _MINUS: number_negative_start_handler,
+            _PLUS: positive_inf_or_sexp_plus_handler,
+            _ZERO: number_zero_start_handler,
+            _OPEN_BRACE: struct_or_lob_handler,
+            _OPEN_PAREN: sexp_handler,
+            _OPEN_BRACKET: list_handler,
+            _SINGLE_QUOTE: string_or_symbol_handler,
+            _DOUBLE_QUOTE: string_handler,
+            _SLASH: sexp_slash_handler,  # Comments are handled as a special case, not through _START_TABLE
         },
         (_DIGITS[1:], number_or_timestamp_handler)
     ),
@@ -1142,7 +1161,7 @@ def _container_handler(c, ctx):
             delimiter_required = False
             c = None
         if c is not None and c not in _WHITESPACE:
-            if c == ord('/'):
+            if c == _SLASH:
                 if child_context is None:
                     # TODO duplicated in a branch below
                     # This is the start of a new child value.
@@ -1159,7 +1178,7 @@ def _container_handler(c, ctx):
                 if child_context and child_context.pending_symbol is not None:
                     # A character besides whitespace, comments, and delimiters has been found, and there is a pending
                     # symbol. That pending symbol is either an annotation, a field name, or a symbol value.
-                    if c == ord(':'):
+                    if c == _COLON:
                         if is_field_name:
                             is_field_name = False
                             child_context = child_context.derive_field_name()
@@ -1168,7 +1187,7 @@ def _container_handler(c, ctx):
                         if len(queue) == 0:
                             yield Transition(None, _read_data_handler(self, ctx))
                         peek = queue.read_byte()
-                        if peek == ord(':'):
+                        if peek == _COLON:
                             child_context = child_context.derive_annotation()
                             c = None  # forces another character to be read safely
                             continue
@@ -1187,7 +1206,7 @@ def _container_handler(c, ctx):
                     handler = _FIELD_NAME_START_TABLE[c](c, child_context)
                 else:
                     handler = _VALUE_START_TABLE[c](c, child_context)  # Initialize the new handler
-            container_start = c == ord(b'[') or c == ord(b'(')  # Note: '{' not here because that might be a lob
+            container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
             read_next = True
             complete = False
             while True:
@@ -1233,7 +1252,7 @@ def _container_handler(c, ctx):
                     assert next_transition is None
                     in_comment = isinstance(trans, _CommentTransition)
                     if is_field_name:
-                        if c == ord(':') or not (c == ord('/') and in_comment):
+                        if c == _COLON or not (c == _SLASH and in_comment):
                             read_next = False
                             break
                     elif child_context and child_context.pending_symbol is not None:
