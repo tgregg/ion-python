@@ -19,6 +19,7 @@ from __future__ import print_function
 
 import string
 from collections import defaultdict
+from functools import partial
 
 import six
 
@@ -29,14 +30,15 @@ from amazon.ion.reader import BufferQueue, reader_trampoline
 from amazon.ion.util import record, coroutine, Enum
 
 
-def _illegal_character(c, ctx):
+def _illegal_character(c, ctx, message=''):
     container_type = ctx.container.ion_type is None and 'top-level' or ctx.container.ion_type.name
     value_type = ctx.ion_type is None and 'unknown' or ctx.ion_type.name
-    raise IonException('Illegal character %s at position %d in %s value contained in %s.'
-                       % (chr(c), ctx.queue.position, value_type, container_type))
+    raise IonException('Illegal character %s at position %d in %s value contained in %s. %s'
+                       % (chr(c), ctx.queue.position, value_type, container_type, message))
 
 
 def _whitelist(dct, fallback=_illegal_character):
+
     out = defaultdict(lambda: fallback)
     for k, v in six.iteritems(dct):
         out[k] = v
@@ -402,8 +404,6 @@ _WHOLE_NUMBER_TABLE = _whitelist({
 })
 
 whole_number_handler = _generate_coefficient_handler(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
-
-
 binary_int_handler = _generate_radix_int_handler(_BINARY_RADIX, _BINARY_DIGITS)
 hex_int_handler = _generate_radix_int_handler(_HEX_RADIX, _HEX_DIGITS)
 
@@ -983,19 +983,9 @@ def clob_handler(c, ctx):
     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.CLOB, ctx.value)
 
 
-@coroutine
-def field_name_handler(c, ctx):
-    yield
-    ctx.queue.unread(c)
-    if c == ord('\''):
-        trans = ctx.immediate_transition(string_or_symbol_handler(c, ctx, is_field_name=True))
-    elif c == ord('"'):
-        trans = ctx.immediate_transition(string_handler(c, ctx, is_field_name=True))
-    elif c in _IDENTIFIER_STARTS:
-        trans = ctx.immediate_transition(symbol_or_keyword_handler(c, ctx, is_field_name=True))
-    else:
-        raise IonException("Illegal character %s in field name." % (chr(c), ))
-    yield trans
+single_quoted_field_name_handler = partial(string_or_symbol_handler, is_field_name=True)
+double_quoted_field_name_handler = partial(string_handler, is_field_name=True)
+unquoted_field_name_handler = partial(symbol_or_keyword_handler, is_field_name=True)
 
 
 @coroutine
@@ -1043,6 +1033,13 @@ def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
                 queue.extend(data)
                 yield Transition(None, whence)
         trans = Transition(stream_event, self)
+
+
+def _insert_sequence(dct, keys, value):
+    dct.update(dict(zip(
+        keys, [value]*len(keys)
+    )))
+    return dct
 
 
 _ZERO_START_TABLE = _whitelist({
@@ -1095,7 +1092,19 @@ _STRUCT_OR_LOB_TABLE = _whitelist({
     ord('{'): lob_handler
 }, struct_handler)
 
-_START_TABLE = _whitelist({
+
+_FIELD_NAME_START_TABLE = _whitelist(
+    _insert_sequence(
+        {
+            ord('\''): single_quoted_field_name_handler,
+            ord('"'): double_quoted_field_name_handler,
+        },
+        _IDENTIFIER_STARTS, unquoted_field_name_handler
+    ),
+    fallback=partial(_illegal_character, message='Illegal character in field name.')
+)
+
+_VALUE_START_TABLE = _whitelist({
     ord('-'): number_negative_start_handler,
     ord('+'): positive_inf_or_sexp_plus_handler,
     ord('0'): number_zero_start_handler,
@@ -1189,9 +1198,9 @@ def _container_handler(c, ctx):
                     # This is the start of a new child value.
                     child_context = ctx.derive_child_context(self)
                 if is_field_name:
-                    handler = field_name_handler(c, child_context)
+                    handler = _FIELD_NAME_START_TABLE[c](c, child_context)
                 else:
-                    handler = _START_TABLE[c](c, child_context)  # Initialize the new handler
+                    handler = _VALUE_START_TABLE[c](c, child_context)  # Initialize the new handler
             container_start = c == ord(b'[') or c == ord(b'(')  # Note: '{' not here because that might be a lob
             read_next = True
             complete = False
