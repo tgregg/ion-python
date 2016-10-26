@@ -314,10 +314,11 @@ def number_or_timestamp_handler(c, ctx):
         c, _ = yield trans
 
 
-def _generate_coefficient_handler(trans_table, assertion=lambda(c): True, ion_type=None, append_first_if_not=None):
+def _generate_numeric_handler(charset, transition, assertion, illegal_before_underscore,
+                              illegal_at_end=(None,), ion_type=None, append_first_if_not=None):
     @coroutine
     def coefficient_handler(c, ctx):
-        assert assertion(c)
+        assert assertion(c, ctx)
         if ion_type is not None:
             ctx = ctx.derive_ion_type(ion_type)
         val = ctx.value
@@ -328,23 +329,40 @@ def _generate_coefficient_handler(trans_table, assertion=lambda(c): True, ion_ty
         trans = (Transition(None, self), None)
         while True:
             if c in _NUMBER_TERMINATORS:
-                if prev == _UNDERSCORE:
-                    raise IonException('%s at end of decimal' % (chr(prev),))
+                if prev == _UNDERSCORE or prev in illegal_at_end:
+                    raise IonException('%s at end of number' % (chr(prev),))
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
             else:
                 if c == _UNDERSCORE:
-                    if prev == _UNDERSCORE or prev == ord('.'):
+                    if prev == _UNDERSCORE or prev in illegal_before_underscore:
                         raise IonException('Underscore after %s' % (chr(prev),))
                 else:
-                    if c not in _DIGITS:
-                        if prev == _UNDERSCORE:
-                            raise IonException('Underscore before %s' % (chr(c),))
-                        trans = ctx.immediate_transition(trans_table[c](c, ctx))
+                    if c not in charset:
+                        trans = transition(prev, c, ctx)
                     else:
                         val.append(c)
             prev = c
             c, _ = yield trans
     return coefficient_handler
+
+
+def _generate_coefficient_handler(trans_table, assertion=lambda c, ctx: True, ion_type=None, append_first_if_not=None):
+    def transition(prev, c, ctx):
+        if prev == _UNDERSCORE:
+            raise IonException('Underscore before %s' % (chr(c),))
+        return ctx.immediate_transition(trans_table[c](c, ctx))
+    return _generate_numeric_handler(_DIGITS, transition, assertion, (ord('.'),),
+                                     ion_type=ion_type, append_first_if_not=append_first_if_not)
+
+
+def _generate_radix_int_handler(radix_indicators, charset):
+    def assertion(c, ctx):
+        return c in radix_indicators and \
+               ((len(ctx.value) == 1 and ctx.value[0] == ord('0')) or
+                (len(ctx.value) == 2 and ctx.value[0] == ord('-') and ctx.value[1] == ord('0'))) and \
+               ctx.ion_type == IonType.INT
+    return _generate_numeric_handler(charset, lambda (prev, c, ctx): _illegal_character(c, ctx),
+                                     assertion, radix_indicators, illegal_at_end=radix_indicators)
 
 
 def _generate_exponent_handler(ion_type, exp_chars):
@@ -394,7 +412,7 @@ _FRACTIONAL_NUMBER_TABLE = _whitelist({
 })
 
 fractional_number_handler = _generate_coefficient_handler(
-    _FRACTIONAL_NUMBER_TABLE, assertion=lambda (c): c == ord('.'), ion_type=IonType.DECIMAL)
+    _FRACTIONAL_NUMBER_TABLE, assertion=lambda c, ctx: c == ord('.'), ion_type=IonType.DECIMAL)
 
 _WHOLE_NUMBER_TABLE = _whitelist({
     ord('.'): fractional_number_handler,
@@ -405,39 +423,6 @@ _WHOLE_NUMBER_TABLE = _whitelist({
 })
 
 whole_number_handler = _generate_coefficient_handler(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
-
-
-def _generate_radix_int_handler(radix_indicators, charset):
-    @coroutine
-    def radix_int_handler(c, ctx):
-        assert c in radix_indicators
-        assert (len(ctx.value) == 1 and ctx.value[0] == ord('0')) \
-               or (len(ctx.value) == 2 and ctx.value[0] == ord('-') and ctx.value[1] == ord('0'))
-        assert ctx.ion_type == IonType.INT
-        val = ctx.value
-        val.append(c)
-        prev = c
-        c, self = yield
-        if c == _UNDERSCORE:
-            raise IonException('Underscore after radix')
-        trans = (Transition(None, self), None)
-        while True:
-            if c in _NUMBER_TERMINATORS:
-                if prev == _UNDERSCORE or prev in radix_indicators:
-                    raise IonException('%s at end of int' % (chr(prev),))
-                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-            else:
-                if c == _UNDERSCORE:
-                    if prev == _UNDERSCORE or prev in radix_indicators:
-                        raise IonException('Underscore after %s' % (chr(prev),))
-                else:
-                    if c not in charset:
-                        _illegal_character(c, ctx)
-                    else:
-                        val.append(c)
-            prev = c
-            c, _ = yield trans
-    return radix_int_handler
 
 
 binary_int_handler = _generate_radix_int_handler(_BINARY_RADIX, _BINARY_DIGITS)

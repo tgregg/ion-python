@@ -69,6 +69,8 @@ _BAD = (
     (b'{+inf:123}', e_start_struct()),
     (b'{-inf:123}', e_start_struct()),
     (b'{nan:123}', e_start_struct()),
+    (b'(1..)', e_start_sexp()),
+    (b'(1.a)', e_start_sexp()),
     (b'(1.23.)', e_start_sexp()),
     (b'/ ',)
 )
@@ -179,6 +181,8 @@ _UNSPACED_SEXPS = (
     (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b')),
     (b'(-100)',) + _good_sexp(e_int(b'-100')),
     (b'(-1.23 .)',) + _good_sexp(e_decimal(b'-1.23'), e_symbol(b'.')),
+    (b'(1.)',) + _good_sexp(e_decimal(b'1.')),
+    (b'(1. .1)',) + _good_sexp(e_decimal(b'1.'), e_symbol(b'.'), e_int(b'1')),
     (b'(nul)',) + _good_sexp(e_symbol(b'nul')),
     (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=b'%-', annotations=(b'foo',)), e_symbol(b'bar')),
     (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(b'.'), e_symbol(b'False'), e_symbol(b'+')),
@@ -243,6 +247,7 @@ _GOOD_SCALARS = (
 
     (b'null.decimal', e_decimal()),
     (b'0.0', e_decimal(_b(b'0.0'))),
+    (b'0.', e_decimal(_b(b'0.'))),
     (b'-0.0', e_decimal(_b(b'-0.0'))),
     (b'0d-1000', e_decimal(_b(b'0d-1000'))),
     (b'0d1000', e_decimal(_b(b'0d1000'))),
