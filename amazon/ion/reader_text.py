@@ -1027,23 +1027,19 @@ double_quoted_field_name_handler = partial(string_handler, is_field_name=True)
 unquoted_field_name_handler = partial(symbol_or_keyword_handler, is_field_name=True)
 
 
-@coroutine
-def struct_handler(c, ctx):
-    ctx.queue.unread(c)  # Necessary because we had to read one char past the { to make sure this isn't a lob
-    yield
-    yield ctx.event_transition(IonEvent, IonEventType.CONTAINER_START, IonType.STRUCT)
+def _generate_container_start_handler(ion_type, before_yield=lambda c, ctx: None):
+    @coroutine
+    def container_start_handler(c, ctx):
+        before_yield(c, ctx)
+        yield
+        yield ctx.event_transition(IonEvent, IonEventType.CONTAINER_START, ion_type)
+    return container_start_handler
 
 
-@coroutine
-def list_handler(c, ctx):
-    yield
-    yield ctx.event_transition(IonEvent, IonEventType.CONTAINER_START, IonType.LIST)
-
-
-@coroutine
-def sexp_handler(c, ctx):
-    yield
-    yield ctx.event_transition(IonEvent, IonEventType.CONTAINER_START, IonType.SEXP)
+# Struct requires unread because we had to read one char past the { to make sure it wasn't a lob.
+struct_handler = _generate_container_start_handler(IonType.STRUCT, lambda c, ctx: ctx.queue.unread(c))
+list_handler = _generate_container_start_handler(IonType.LIST)
+sexp_handler = _generate_container_start_handler(IonType.SEXP)
 
 
 @coroutine
