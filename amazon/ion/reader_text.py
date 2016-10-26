@@ -45,6 +45,19 @@ def _whitelist(dct, fallback=_illegal_character):
     return out
 
 
+def _merge_dicts(*args):
+    dct = {}
+    for arg in args:
+        if isinstance(arg, dict):
+            merge = arg
+        else:
+            assert isinstance(arg, tuple)
+            keys, value = arg
+            merge = dict(zip(keys, [value]*len(keys)))
+        dct.update(merge)
+    return dct
+
+
 def _seq(s):
     return tuple(ord(x) for x in s)
 
@@ -66,7 +79,7 @@ _OPERATORS = _seq('!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no
 
 _UNDERSCORE = ord('_')
 _MINUS = ord('-')
-_ZERO = ord('0')
+_ZERO = _DIGITS[0]
 
 _TRUE_SEQUENCE = _seq('rue')
 _FALSE_SEQUENCE = _seq('alse')
@@ -385,23 +398,24 @@ decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
 float_handler = _generate_exponent_handler(IonType.FLOAT, _FLOAT_EXPS)
 
 
-_FRACTIONAL_NUMBER_TABLE = _whitelist({
-    ord('d'): decimal_handler,
-    ord('e'): float_handler,
-    ord('D'): decimal_handler,
-    ord('E'): float_handler,
-})
+_FRACTIONAL_NUMBER_TABLE = _whitelist(
+    _merge_dicts(
+        (_DECIMAL_EXPS, decimal_handler),
+        (_FLOAT_EXPS, float_handler)
+    )
+)
 
 fractional_number_handler = _generate_coefficient_handler(
     _FRACTIONAL_NUMBER_TABLE, assertion=lambda c, ctx: c == ord('.'), ion_type=IonType.DECIMAL)
 
-_WHOLE_NUMBER_TABLE = _whitelist({
-    ord('.'): fractional_number_handler,
-    ord('d'): decimal_handler,
-    ord('e'): float_handler,
-    ord('D'): decimal_handler,
-    ord('E'): float_handler,
-})
+_WHOLE_NUMBER_TABLE = _whitelist(
+    _merge_dicts(
+        {
+            ord('.'): fractional_number_handler,
+        },
+        _FRACTIONAL_NUMBER_TABLE
+    )
+)
 
 whole_number_handler = _generate_coefficient_handler(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
 binary_int_handler = _generate_radix_int_handler(_BINARY_RADIX, _BINARY_DIGITS)
@@ -410,12 +424,10 @@ hex_int_handler = _generate_radix_int_handler(_HEX_RADIX, _HEX_DIGITS)
 
 @coroutine
 def timestamp_zero_start_handler(c, ctx):
-    assert len(ctx.value) == 1
-    assert ctx.value[0] == _ZERO
-    ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
     val = ctx.value
     if val[0] == _MINUS:
         raise IonException('Negative not allowed in timestamp')
+    ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
     val.append(c)
     c, self = yield
     trans = (Transition(None, self), None)
@@ -1035,58 +1047,35 @@ def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
         trans = Transition(stream_event, self)
 
 
-def _insert_sequence(dct, keys, value):
-    dct.update(dict(zip(
-        keys, [value]*len(keys)
-    )))
-    return dct
+_ZERO_START_TABLE = _whitelist(
+    _merge_dicts(
+        _WHOLE_NUMBER_TABLE,
+        (_DIGITS, timestamp_zero_start_handler),
+        (_BINARY_RADIX, binary_int_handler),
+        (_HEX_RADIX, hex_int_handler)
+    )
+)
 
+_NUMBER_OR_TIMESTAMP_TABLE = _whitelist(
+    _merge_dicts(
+        {
+            ord('-'): timestamp_handler,
+            ord('T'): timestamp_handler,
+            ord('_'): whole_number_handler,
+        },
+        _WHOLE_NUMBER_TABLE
+    )
+)
 
-_ZERO_START_TABLE = _whitelist({
-    ord('0'): timestamp_zero_start_handler,
-    ord('1'): timestamp_zero_start_handler,
-    ord('2'): timestamp_zero_start_handler,
-    ord('3'): timestamp_zero_start_handler,
-    ord('4'): timestamp_zero_start_handler,
-    ord('5'): timestamp_zero_start_handler,
-    ord('6'): timestamp_zero_start_handler,
-    ord('7'): timestamp_zero_start_handler,
-    ord('8'): timestamp_zero_start_handler,
-    ord('9'): timestamp_zero_start_handler,
-    ord('b'): binary_int_handler,
-    ord('x'): hex_int_handler,
-    ord('B'): binary_int_handler,
-    ord('X'): hex_int_handler,
-    ord('.'): fractional_number_handler,
-    ord('d'): decimal_handler,
-    ord('e'): float_handler,
-    ord('D'): decimal_handler,
-    ord('E'): float_handler
-})
-
-_NUMBER_OR_TIMESTAMP_TABLE = _whitelist({
-    ord('-'): timestamp_handler,
-    ord('T'): timestamp_handler,
-    ord('.'): fractional_number_handler,
-    ord('_'): whole_number_handler,
-    ord('d'): decimal_handler,
-    ord('e'): float_handler,
-    ord('D'): decimal_handler,
-    ord('E'): float_handler,
-})
-
-_NEGATIVE_TABLE = _whitelist({
-    ord('0'): number_zero_start_handler,
-    ord('1'): whole_number_handler,
-    ord('2'): whole_number_handler,
-    ord('3'): whole_number_handler,
-    ord('4'): whole_number_handler,
-    ord('5'): whole_number_handler,
-    ord('6'): whole_number_handler,
-    ord('7'): whole_number_handler,
-    ord('8'): whole_number_handler,
-    ord('9'): whole_number_handler,
-}, negative_inf_or_sexp_hyphen_handler)
+_NEGATIVE_TABLE = _whitelist(
+    _merge_dicts(
+        {
+            _ZERO: number_zero_start_handler,
+        },
+        (_DIGITS[1:], whole_number_handler)
+    ),
+    fallback=negative_inf_or_sexp_hyphen_handler
+)
 
 _STRUCT_OR_LOB_TABLE = _whitelist({
     ord('{'): lob_handler
@@ -1094,36 +1083,33 @@ _STRUCT_OR_LOB_TABLE = _whitelist({
 
 
 _FIELD_NAME_START_TABLE = _whitelist(
-    _insert_sequence(
+    _merge_dicts(
         {
             ord('\''): single_quoted_field_name_handler,
             ord('"'): double_quoted_field_name_handler,
         },
-        _IDENTIFIER_STARTS, unquoted_field_name_handler
+        (_IDENTIFIER_STARTS, unquoted_field_name_handler)
     ),
     fallback=partial(_illegal_character, message='Illegal character in field name.')
 )
 
-_VALUE_START_TABLE = _whitelist({
-    ord('-'): number_negative_start_handler,
-    ord('+'): positive_inf_or_sexp_plus_handler,
-    ord('0'): number_zero_start_handler,
-    ord('1'): number_or_timestamp_handler,
-    ord('2'): number_or_timestamp_handler,
-    ord('3'): number_or_timestamp_handler,
-    ord('4'): number_or_timestamp_handler,
-    ord('5'): number_or_timestamp_handler,
-    ord('6'): number_or_timestamp_handler,
-    ord('7'): number_or_timestamp_handler,
-    ord('8'): number_or_timestamp_handler,
-    ord('9'): number_or_timestamp_handler,
-    ord('{'): struct_or_lob_handler,
-    ord('('): sexp_handler,
-    ord('['): list_handler,
-    ord('\''): string_or_symbol_handler,
-    ord('\"'): string_handler,
-    ord('/'): sexp_slash_handler,  # Comments are handled as a special case, not through _START_TABLE
-}, symbol_or_keyword_handler)
+_VALUE_START_TABLE = _whitelist(
+    _merge_dicts(
+        {
+            ord('-'): number_negative_start_handler,
+            ord('+'): positive_inf_or_sexp_plus_handler,
+            ord('0'): number_zero_start_handler,
+            ord('{'): struct_or_lob_handler,
+            ord('('): sexp_handler,
+            ord('['): list_handler,
+            ord('\''): string_or_symbol_handler,
+            ord('\"'): string_handler,
+            ord('/'): sexp_slash_handler,  # Comments are handled as a special case, not through _START_TABLE
+        },
+        (_DIGITS[1:], number_or_timestamp_handler)
+    ),
+    fallback=symbol_or_keyword_handler
+)
 
 
 @coroutine
