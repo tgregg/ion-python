@@ -63,6 +63,8 @@ _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
 _OPERATORS = _seq('!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no, java: no, grammar: yes
 
 _UNDERSCORE = ord('_')
+_MINUS = ord('-')
+_ZERO = ord('0')
 
 _TRUE_SEQUENCE = _seq('rue')
 _FALSE_SEQUENCE = _seq('alse')
@@ -275,7 +277,7 @@ class _CommentTransition(Transition):
 
 @coroutine
 def number_negative_start_handler(c, ctx):
-    assert c == ord('-')
+    assert c == _MINUS
     assert len(ctx.value) == 0
     ctx = ctx.derive_ion_type(IonType.INT)
     ctx.value.append(c)
@@ -285,8 +287,8 @@ def number_negative_start_handler(c, ctx):
 
 @coroutine
 def number_zero_start_handler(c, ctx):
-    assert c == ord('0')
-    assert len(ctx.value) == 0 or (len(ctx.value) == 1 and ctx.value[0] == ord('-'))
+    assert c == _ZERO
+    assert len(ctx.value) == 0 or (len(ctx.value) == 1 and ctx.value[0] == _MINUS)
     ctx = ctx.derive_ion_type(IonType.INT)
     ctx.value.append(c)
     c, _ = yield
@@ -338,7 +340,7 @@ def _generate_numeric_handler(charset, transition, assertion, illegal_before_und
                         raise IonException('Underscore after %s' % (chr(prev),))
                 else:
                     if c not in charset:
-                        trans = transition(prev, c, ctx)
+                        trans = transition(prev, c, ctx, trans)
                     else:
                         val.append(c)
             prev = c
@@ -346,8 +348,20 @@ def _generate_numeric_handler(charset, transition, assertion, illegal_before_und
     return coefficient_handler
 
 
+def _generate_exponent_handler(ion_type, exp_chars):
+    def transition(prev, c, ctx, trans):
+        if c == _MINUS and prev in exp_chars:
+            ctx.value.append(c)
+        else:
+            _illegal_character(c, ctx)
+        return trans
+    illegal = exp_chars + (_MINUS,)
+    return _generate_numeric_handler(_DIGITS, transition, lambda c, ctx: c in exp_chars, illegal,
+                                     illegal_at_end=illegal, ion_type=ion_type)
+
+
 def _generate_coefficient_handler(trans_table, assertion=lambda c, ctx: True, ion_type=None, append_first_if_not=None):
-    def transition(prev, c, ctx):
+    def transition(prev, c, ctx, trans):
         if prev == _UNDERSCORE:
             raise IonException('Underscore before %s' % (chr(c),))
         return ctx.immediate_transition(trans_table[c](c, ctx))
@@ -358,46 +372,11 @@ def _generate_coefficient_handler(trans_table, assertion=lambda c, ctx: True, io
 def _generate_radix_int_handler(radix_indicators, charset):
     def assertion(c, ctx):
         return c in radix_indicators and \
-               ((len(ctx.value) == 1 and ctx.value[0] == ord('0')) or
-                (len(ctx.value) == 2 and ctx.value[0] == ord('-') and ctx.value[1] == ord('0'))) and \
+               ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
+                (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
                ctx.ion_type == IonType.INT
     return _generate_numeric_handler(charset, lambda (prev, c, ctx): _illegal_character(c, ctx),
                                      assertion, radix_indicators, illegal_at_end=radix_indicators)
-
-
-def _generate_exponent_handler(ion_type, exp_chars):
-    @coroutine
-    def exponent_handler(c, ctx):
-        assert c in exp_chars
-        ctx = ctx.derive_ion_type(ion_type)
-        val = ctx.value
-        val.append(c)
-        prev = c
-        c, self = yield
-        trans = (Transition(None, self), None)
-        negative_exp = False
-        while True:
-            if c in _NUMBER_TERMINATORS:
-                if prev == _UNDERSCORE or prev in exp_chars or prev == ord('-'):
-                    raise IonException('%s at end of real number' % (chr(prev),))
-                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-            else:
-                if c == _UNDERSCORE:
-                    if prev == _UNDERSCORE or prev in exp_chars or prev == ord('-'):
-                        raise IonException('Underscore after %s' % (chr(prev),))
-                else:
-                    if c == ord('-'):
-                        if negative_exp:
-                            raise IonException('Multiple negatives in exponent')
-                        negative_exp = True
-                        val.append(c)
-                    elif c not in _DIGITS:
-                        _illegal_character(c, ctx)
-                    else:
-                        val.append(c)
-            prev = c
-            c, _ = yield trans
-    return exponent_handler
 
 
 decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
@@ -432,16 +411,16 @@ hex_int_handler = _generate_radix_int_handler(_HEX_RADIX, _HEX_DIGITS)
 @coroutine
 def timestamp_zero_start_handler(c, ctx):
     assert len(ctx.value) == 1
-    assert ctx.value[0] == ord('0')
+    assert ctx.value[0] == _ZERO
     ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
     val = ctx.value
-    if val[0] == ord('-'):
+    if val[0] == _MINUS:
         raise IonException('Negative not allowed in timestamp')
     val.append(c)
     c, self = yield
     trans = (Transition(None, self), None)
     while True:
-        if c == ord('-') or c == ord('T'):
+        if c == _MINUS or c == ord('T'):
             trans = ctx.immediate_transition(timestamp_handler(c, ctx))
         elif c in _DIGITS:
             val.append(c)
@@ -463,7 +442,7 @@ def timestamp_handler(c, ctx):
         OFF_HOUR = 7
         OFF_MINUTE = 8
 
-    assert c == ord('T') or c == ord('-')
+    assert c == ord('T') or c == _MINUS
     if len(ctx.value) != 4:  # or should this be left to the parser?
         raise IonException('Timestamp year is %d digits; expected 4' % (len(ctx.value),))
     ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
@@ -490,13 +469,13 @@ def timestamp_handler(c, ctx):
             elif c in _TIMESTAMP_DELIMITERS:
                 nxt = _DIGITS
             elif c in _DIGITS:
-                if prev == ord('+') or (state > State.MONTH and prev == ord('-')):
+                if prev == ord('+') or (state > State.MONTH and prev == _MINUS):
                     state = State.OFF_HOUR
                 elif prev in (_TIMESTAMP_DELIMITERS + (ord('T'),)):
                     state = State[state + 1]
                 elif prev in _DIGITS:
                     if state == State.MONTH:
-                        nxt = (ord('-'), ord('T'))
+                        nxt = (_MINUS, ord('T'))
                     elif state == State.DAY:
                         nxt = (ord('T'),) + _NUMBER_TERMINATORS
                     elif state == State.HOUR:
