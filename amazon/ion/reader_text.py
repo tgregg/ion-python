@@ -724,83 +724,54 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
     maybe_false = c == _F_LOWER
     c, self = yield
     trans = (Transition(None, self), None)
+    keyword_trans = None
     match_index = 0
     while True:
-        if maybe_null:
-            if match_index < len(_NULL_SEQUENCE.sequence):
-                maybe_null = c == _NULL_SEQUENCE[match_index]
+        def check_keyword(keyword_sequence, ion_type, value, match_transition=lambda: (False, None)):
+            maybe_keyword = True
+            transition = None
+            if match_index < len(keyword_sequence):
+                maybe_keyword = c == keyword_sequence[match_index]
             else:
-                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                transitioned, transition = match_transition()
+                if transitioned:
+                    pass
+                elif c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
                     if is_field_name:
-                        raise IonException("Null field name not allowed")
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
-                elif c == _DOT:
+                        raise IonException("nan keyword as field name not allowed")
+                    transition = ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, value)
+                elif c == _COLON:
+                    if is_field_name:
+                        raise IonException("nan keyword as field name not allowed")
+                    else:
+                        raise IonException("Illegal character in symbol: :")  # TODO
+                elif in_sexp and c in _OPERATORS:
+                    transition = ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, value)
+                else:
+                    maybe_keyword = False
+            return maybe_keyword, transition
+        if maybe_null:
+            def check_null_dot():
+                transition = None
+                found = c == _DOT
+                if found:
                     if is_field_name:
                         raise IonException("Illegal character in field name: .")  # TODO
-                    yield ctx.immediate_transition(typed_null_handler(c, ctx))
-                elif c == _COLON:
-                    if is_field_name:
-                        raise IonException("Null field name not allowed")
-                    else:
-                        raise IonException("Illegal character in symbol: :")  # TODO
-                elif in_sexp and c in _OPERATORS:
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.NULL, None)
-                else:
-                    maybe_null = False
+                    transition = ctx.immediate_transition(typed_null_handler(c, ctx))
+                return found, transition
+            maybe_null, keyword_trans = check_keyword(_NULL_SEQUENCE.sequence, IonType.NULL, None, check_null_dot)
         if maybe_nan:
-            if match_index < len(_NAN_SEQUENCE):
-                maybe_nan = c == _NAN_SEQUENCE[match_index]
-            else:
-                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
-                    if is_field_name:
-                        raise IonException("nan keyword as field name not allowed")
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, val)
-                elif c == _COLON:
-                    if is_field_name:
-                        raise IonException("nan keyword as field name not allowed")
-                    else:
-                        raise IonException("Illegal character in symbol: :")  # TODO
-                elif in_sexp and c in _OPERATORS:
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, val)
-                else:
-                    maybe_nan = False
+            maybe_nan, keyword_trans = check_keyword(_NAN_SEQUENCE, IonType.FLOAT, val)
         elif maybe_true:
-            if match_index < len(_TRUE_SEQUENCE):
-                maybe_true = c == _TRUE_SEQUENCE[match_index]
-            else:
-                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
-                    if is_field_name:
-                        raise IonException("true keyword as field name not allowed")
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, True)
-                elif c == _COLON:
-                    if is_field_name:
-                        raise IonException("true keyword as field name not allowed")
-                    else:
-                        raise IonException("Illegal character in symbol: :")  # TODO
-                elif in_sexp and c in _OPERATORS:
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, True)
-                else:
-                    maybe_true = False
+            maybe_true, keyword_trans = check_keyword(_TRUE_SEQUENCE, IonType.BOOL, True)
         elif maybe_false:
-            if match_index < len(_FALSE_SEQUENCE):
-                maybe_false = c == _FALSE_SEQUENCE[match_index]
-            else:
-                if c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
-                    if is_field_name:
-                        raise IonException("false keyword as field name not allowed")
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, False)
-                elif c == _COLON:
-                    if is_field_name:
-                        raise IonException("false keyword as field name not allowed")
-                    else:
-                        raise IonException("Illegal character in symbol: :")  # TODO
-                elif in_sexp and c in _OPERATORS:
-                    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.BOOL, False)
-                else:
-                    maybe_false = False
+            maybe_false, keyword_trans = check_keyword(_FALSE_SEQUENCE, IonType.BOOL, False)
         if maybe_null or maybe_nan or maybe_true or maybe_false:
-            val.append(c)
-            match_index += 1
+            if keyword_trans is not None:
+                trans = keyword_trans
+            else:
+                val.append(c)
+                match_index += 1
         else:
             if c in _WHITESPACE or c == _SLASH or c == _COLON:
                 # This might be an annotation or a field name
