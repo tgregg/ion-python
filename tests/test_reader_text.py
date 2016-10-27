@@ -49,7 +49,11 @@ _BAD = (
     (b'0b_1',),
     (b'1e0-1',),
     (b'1e0e-1',),
+    (b'+inf-',),
     (b'null.strings',),
+    (b'null.strn',),
+    (b'null.x',),
+    (b'null.',),
     (b'200T',),
     (b'-2000T',),
     (b'-0001T',),
@@ -77,7 +81,8 @@ _BAD = (
     (b'(1..)', e_start_sexp()),
     (b'(1.a)', e_start_sexp()),
     (b'(1.23.)', e_start_sexp()),
-    (b'/ ',)
+    (b'/ ',),
+    (b'/b',),
 )
 
 _INCOMPLETE = (
@@ -143,6 +148,7 @@ def _good_list(*events):
 
 
 _GOOD = (
+    #(b'null()', e_null()) + _good_sexp(),  # TODO
     (b'[]',) + _good_list(),
     (b'()',) + _good_sexp(),
     (b'{}',) + _good_struct(),
@@ -168,6 +174,7 @@ _GOOD = (
         e_start_sexp(), e_end_sexp(),
     ),
     (b'{\'\':bar,}',) + _good_struct(e_symbol(field_name=b'', value=b'bar')),
+    #(b'{\'\'\'foo\'\'\'/**/\'\'bar\'\'\'::baz}',) + _good_struct(e_symbol(field_name=b'foobar', value=b'baz')) # TODO
 )
 
 
