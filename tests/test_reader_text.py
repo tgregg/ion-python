@@ -71,6 +71,7 @@ _BAD = (
     (b'{foo:bar/**/baz:zar}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
     (b'[abc 123]', e_start_list(), e_symbol(value=b'abc')),
     (b'{foo::bar:baz}', e_start_struct()),
+    #(b'{foo, bar}', e_start_struct()),  # TODO should fail
     (b'[abc, , 123]', e_start_list(), e_symbol(value=b'abc')),
     (b'{foo:bar, ,}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
     (b'{true:123}', e_start_struct()),
@@ -78,9 +79,12 @@ _BAD = (
     (b'{+inf:123}', e_start_struct()),
     (b'{-inf:123}', e_start_struct()),
     (b'{nan:123}', e_start_struct()),
+    (b'\'\'\'foo\'\'\'/\'\'\'bar\'\'\'',),  # Dangling slash at the top level.
+    (b'{\'\'\'foo\'\'\'/**/\'\'bar\'\'\':baz}', e_start_struct()),  # Missing an opening ' before "bar".
     (b'(1..)', e_start_sexp()),
     (b'(1.a)', e_start_sexp()),
     (b'(1.23.)', e_start_sexp()),
+    # (b'(42/)', e_start_sexp()), # TODO according to grammar and Java, this should fail. But why must it?
     (b'/ ',),
     (b'/b',),
 )
@@ -178,11 +182,14 @@ _GOOD = (
         e_start_sexp(), e_end_sexp(),
     ),
     (b'{\'\':bar,}',) + _good_struct(e_symbol(field_name=b'', value=b'bar')),
-    #(b'{\'\'\'foo\'\'\'/**/\'\'bar\'\'\'::baz}',) + _good_struct(e_symbol(field_name=b'foobar', value=b'baz')) # TODO
+    (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(field_name=b'foobar', value=b'baz')) # TODO
 )
 
 
 _UNSPACED_SEXPS = (
+    (b'(a/b)',) + _good_sexp(e_symbol(b'a'), e_symbol(b'/'), e_symbol(b'b')),
+    (b'(a+b)',) + _good_sexp(e_symbol(b'a'), e_symbol(b'+'), e_symbol(b'b')),
+    (b'(a-b)',) + _good_sexp(e_symbol(b'a'), e_symbol(b'-'), e_symbol(b'b')),
     (b'(foo //bar\n::baz)',) + _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',))),
     (b'(foo/*bar*/ ::baz)',) + _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',))),
     (b'(\'a b\' //\n::cd)',) + _good_sexp(e_symbol(value=b'cd', annotations=(b'a b',))),
@@ -194,7 +201,12 @@ _UNSPACED_SEXPS = (
     (b'(abc//baz\n123)',) + _good_sexp(e_symbol(b'abc'), e_int(b'123')),
     (b'(foo%+null-//\n)',) + _good_sexp(e_symbol(b'foo'), e_symbol(b'%+'), e_null(), e_symbol(b'-//')),  # Matches java.
     (b'(null-100)',) + _good_sexp(e_null(), e_int(b'-100')),
-    (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b')),
+    (b'(null\'a\')',) + _good_sexp(e_null(), e_symbol(b'a')),
+    (b'(null\'a\'::b)',) + _good_sexp(e_null(), e_symbol(value=b'b', annotations=(b'a',))),
+    (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b')),  # TODO grammar actually disallows DOT after any null, but ion-java doesn't care
+    (b'(42\'a\'::b)',) + _good_sexp(e_int(b'42'), e_symbol(value=b'b', annotations=(b'a',))),
+    (b'(1.23[])',) + _good_sexp(e_decimal(b'1.23'), e_start_list(), e_end_list()),
+    (b'(\'\'\'foo\'\'\'/\'\'\'bar\'\'\')',) + _good_sexp(e_string(b'foo'), e_symbol(b'/'), e_string(b'bar')),
     (b'(-100)',) + _good_sexp(e_int(b'-100')),
     (b'(-1.23 .)',) + _good_sexp(e_decimal(b'-1.23'), e_symbol(b'.')),
     (b'(1.)',) + _good_sexp(e_decimal(b'1.')),
@@ -207,6 +219,9 @@ _UNSPACED_SEXPS = (
     (b'(+inf)',) + _good_sexp(e_float(b'+inf')),
     (b'(nan)',) + _good_sexp(e_float(b'nan')),
     (b'(-inf+inf)',) + _good_sexp(e_float(b'-inf'), e_float(b'+inf')),
+    (b'(+inf\'foo\')',) + _good_sexp(e_float(b'+inf'), e_symbol(b'foo')),
+    (b'(-inf\'foo\'::bar)',) + _good_sexp(e_float(b'-inf'), e_symbol(value=b'bar', annotations=(b'foo',))),
+    # (b'(nan42)',) + _good_sexp(e_float(b'nan'), e_int(b'42')),  # TODO If I'm reading the grammar correctly, this should pass, but ion-java doesn't do this...
     # TODO the inf tests do not match ion-java's behavior. They should be reconciled. I believe this is more correct.
     (b'(- -inf-inf-in-infs-)',) + _good_sexp(
         e_symbol(b'-'), e_float(b'-inf'), e_float(b'-inf'), e_symbol(b'-'),
@@ -308,6 +323,7 @@ _GOOD_SCALARS = (
     (b'null.string', e_string()),
     (b'" "', e_string(_b(b' '))),
     (b'\'\'\'foo\'\'\' \'\'\'\'\'\' \'\'\'""\'\'\'', e_string(_b(b'foo""'))),
+    (b'\'\'\'ab\'\'cd\'\'\'', e_string(_b(b'ab\'\'cd'))),
     # TODO escape sequences
 
     (b'null.clob', e_clob()),
@@ -475,11 +491,22 @@ _TEST_FIELD_NAMES = (
     _TEST_SYMBOLS[0] +
     (
         b'"foo"',
-        # TODO triple-quoted string as field name
+        b'"foo"//bar\n',
+        b'\'\'\'foo\'\'\'/*bar*/\'\'\'baz\'\'\'',
+        b'//zar\n\'\'\'foo\'\'\'/*bar*/\'\'\'baz\'\'\'',
+        b'\'\'\'a \'\'\'\t\'\'\'b\'\'\'',
+        b'\'\'\'a \'\'\'\'\'\'b\'\'\'/*zar*/',
+        b'\'\'\'\'\'\'',
     ),
     _TEST_SYMBOLS[1] +
     (
         b'foo',
+        b'foo',
+        b'foobaz',
+        b'foobaz',
+        b'a b',
+        b'a b',
+        b'',
     )
 )
 

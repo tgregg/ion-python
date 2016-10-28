@@ -544,6 +544,7 @@ def string_handler(c, ctx, is_field_name=False):
     # TODO parse unicode escapes (in parser)
     assert c == _DOUBLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
+    assert not (is_clob and is_field_name)
     if not is_clob and not is_field_name:
         ctx = ctx.derive_ion_type(IonType.STRING)
     val = ctx.value
@@ -600,25 +601,38 @@ def comment_handler(c, ctx, whence):
 
 
 @coroutine
-def sexp_slash_handler(c, ctx):
+def sexp_slash_handler(c, ctx, whence=None, pending_event=None):
     assert c == _SLASH
+    if whence is None:
+        whence = ctx.whence
     c, self = yield
     ctx.queue.unread(c)
     if c == _ASTERISK or c == _SLASH:
-        yield ctx.immediate_transition(comment_handler(_SLASH, ctx, ctx.whence))
+        yield ctx.immediate_transition(comment_handler(_SLASH, ctx, whence))
     else:
+        if pending_event is not None:
+            # Since this is the start of a new value and not a comment, the pending event must be emitted.
+            assert pending_event.event is not None
+            next_ctx = ctx.derive_child_context(ctx.whence)
+            next_immediate = next_ctx.immediate_transition(operator_symbol_handler(_SLASH, next_ctx))
+            yield [pending_event, next_immediate[0]], next_ctx
         yield ctx.immediate_transition(operator_symbol_handler(_SLASH, ctx))
 
 
 @coroutine
-def triple_quote_string_handler(c, ctx):
+def triple_quote_string_handler(c, ctx, is_field_name=False):
     assert c == _SINGLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
-    if not is_clob:
+    assert not (is_clob and is_field_name)
+    if not is_clob and not is_field_name:
         ctx = ctx.derive_ion_type(IonType.STRING)
+    val = ctx.value
+    if is_field_name:
+        assert not val
+        ctx = ctx.derive_pending_symbol()
+        val = ctx.pending_symbol
     quotes = 0
     in_data = True
-    val = ctx.value
     prev = c
     c, self = yield
     here = (Transition(None, self), None)
@@ -642,7 +656,9 @@ def triple_quote_string_handler(c, ctx):
             else:
                 if quotes > 0:
                     ctx.queue.unread(tuple([_c(_SINGLE_QUOTE)]*quotes + [c]))  # un-read the skipped quotes AND c, which will be consumed again later
-                    if not is_clob:
+                    if is_field_name:
+                        _illegal_character(c, ctx, "Malformed triple-quoted field name: %s" % (val,))
+                    elif not is_clob:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                     else:
                         trans = ctx.immediate_transition(clob_end_handler(c, ctx))
@@ -650,7 +666,13 @@ def triple_quote_string_handler(c, ctx):
                     if is_clob:
                         trans = ctx.immediate_transition(clob_end_handler(c, ctx))
                     elif c == _SLASH:
-                        trans = ctx.immediate_transition(comment_handler(c, ctx, self))
+                        if ctx.container.ion_type is IonType.SEXP:
+                            pending = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)[0]
+                            trans = ctx.immediate_transition(sexp_slash_handler(c, ctx, self, pending))
+                        else:
+                            trans = ctx.immediate_transition(comment_handler(c, ctx, self))
+                    elif is_field_name:
+                        trans = ctx.immediate_transition(ctx.whence)
                     else:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         prev = c
@@ -672,9 +694,7 @@ def two_single_quotes_handler(c, ctx, is_field_name):
     assert c == _SINGLE_QUOTE
     c, self = yield
     if c == _SINGLE_QUOTE:
-        if is_field_name:
-            _illegal_character(c, ctx, 'Expected field name, got triple-quoted string.')  # TODO this is actually legal
-        yield ctx.immediate_transition(triple_quote_string_handler(c, ctx))
+        yield ctx.immediate_transition(triple_quote_string_handler(c, ctx, is_field_name))
     else:
         # This is the empty symbol
         ctx = ctx.derive_pending_symbol()
@@ -1137,7 +1157,11 @@ def _container_handler(c, ctx):
                     # This is the start of a new child value.
                     child_context = ctx.derive_child_context(self)
                 if ctx.ion_type is IonType.SEXP:
-                    handler = sexp_slash_handler(c, child_context)
+                    pending_event = None
+                    if child_context.pending_symbol is not None:
+                        pending_event = child_context.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL,
+                                                             child_context.pending_symbol)[0]
+                    handler = sexp_slash_handler(c, child_context, pending_event=pending_event)
                 else:
                     handler = comment_handler(c, child_context, self)
             elif delimiter_required:
