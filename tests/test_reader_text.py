@@ -148,7 +148,11 @@ def _good_list(*events):
 
 
 _GOOD = (
-    #(b'null()', e_null()) + _good_sexp(),  # TODO
+    (b'42[]', e_int(b'42')) + _good_list(),
+    (b'null()', e_null()) + _good_sexp(),
+    (b'tru{}', e_symbol(b'tru')) + _good_struct(),
+    (b'+inf"bar"', e_float(b'+inf'), e_string(b'bar')),
+    (b'foo\'bar\'"baz"', e_symbol(b'foo'), e_symbol(b'bar'), e_string(b'baz')),
     (b'[]',) + _good_list(),
     (b'()',) + _good_sexp(),
     (b'{}',) + _good_struct(),
@@ -467,6 +471,18 @@ _TEST_SYMBOLS = (
     )
 )
 
+_TEST_FIELD_NAMES = (
+    _TEST_SYMBOLS[0] +
+    (
+        b'"foo"',
+        # TODO triple-quoted string as field name
+    ),
+    _TEST_SYMBOLS[1] +
+    (
+        b'foo',
+    )
+)
+
 
 def _generate_annotations():
     assert len(_TEST_SYMBOLS[0]) == len(_TEST_SYMBOLS[1])
@@ -523,11 +539,11 @@ def _annotate_params(params, is_delegate=False):
 
 
 def _generate_field_name():
-    assert len(_TEST_SYMBOLS[0]) == len(_TEST_SYMBOLS[1])
+    assert len(_TEST_FIELD_NAMES[0]) == len(_TEST_FIELD_NAMES[1])
     i = 0
-    num_symbols = len(_TEST_SYMBOLS[0])
+    num_symbols = len(_TEST_FIELD_NAMES[0])
     while True:
-        yield _TEST_SYMBOLS[0][i], _TEST_SYMBOLS[1][i]
+        yield _TEST_FIELD_NAMES[0][i], _TEST_FIELD_NAMES[1][i]
         i += 1
         if i == num_symbols:
             i = 0
@@ -546,11 +562,11 @@ def _containerize_params(param_generator, with_skip=True, is_delegate=False, top
     while True:
         yield
         for info in ((IonType.LIST, b'[', b']', b','),
-                     (IonType.SEXP, b'(', b')', b' '),  # TODO sexps without space delimiters are tested separately
-                     (IonType.STRUCT, b'{ ', b'}', b','),
+                     (IonType.SEXP, b'(', b')', b' '),  # Sexps without delimiters are tested separately
+                     (IonType.STRUCT, b'{ ', b'}', b','),  # Space after opening bracket for instant event.
                      (IonType.LIST, b'[/**/', b'//\n]', b'//\n,'),
-                     (IonType.SEXP, b'(//\n', b'/**/)', b'/**/'),  # TODO sexps without space delimiters are tested separately
-                     (IonType.STRUCT, b'{/**/', b'//\n}', b'/**/,')):  # space after opening bracket for instant start_container event
+                     (IonType.SEXP, b'(//\n', b'/**/)', b'/**/'),
+                     (IonType.STRUCT, b'{/**/', b'//\n}', b'/**/,')):
             ion_type = info[0]
             params = _collect_params(param_generator, info[3])
             for param in params:

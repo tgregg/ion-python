@@ -67,7 +67,7 @@ def _seq(s):
 
 
 _WHITESPACE = _seq(' \t\n\r')
-_NUMBER_TERMINATORS = _seq('{}[](),\"\' \t\n\r/')
+_VALUE_TERMINATORS = _seq('{}[](),\"\' \t\n\r/')
 _DIGITS = _seq(string.digits)
 _BINARY_RADIX = _seq('Bb')
 _BINARY_DIGITS = _seq('01')
@@ -187,7 +187,7 @@ class _HandlerContext(record(
     """
 
     def event_transition(self, event_cls, event_type,
-                         ion_type=None, value=None, annotations=None, depth=None, whence=None):
+                         ion_type=None, value=None, annotations=None, depth=None, whence=None, trans_cls=Transition):
         """Returns an ion event event_transition that yields to another co-routine.
 
         If ``annotations`` is not specified, then the ``annotations`` are the annotations of this
@@ -206,12 +206,12 @@ class _HandlerContext(record(
         if whence is None:
             whence = self.whence
 
-        return Transition(
+        return trans_cls(
             event_cls(event_type, ion_type, value, self.field_name, annotations, depth),
             whence
         ), None
 
-    def immediate_transition(self, delegate=None):
+    def immediate_transition(self, delegate=None, trans_cls=Transition):
         """Returns an immediate transition to another co-routine.
 
         If ``delegate`` is not specified, then ``whence`` is the delegate.
@@ -219,7 +219,7 @@ class _HandlerContext(record(
         if delegate is None:
             delegate = self.whence
 
-        return Transition(None, delegate), self
+        return trans_cls(None, delegate), self
 
     def derive_container_context(self, ion_type, whence, add_depth=1):
         if ion_type is IonType.STRUCT:
@@ -299,7 +299,9 @@ class _HandlerContext(record(
             None  # reset pending symbol
         )
 
-    def derive_pending_symbol(self, pending_symbol=bytearray()):
+    def derive_pending_symbol(self, pending_symbol=None):
+        if pending_symbol is None:
+            pending_symbol = bytearray()
         return _HandlerContext(
             self.container,
             self.queue,
@@ -313,8 +315,8 @@ class _HandlerContext(record(
         )
 
 
-class _CommentTransition(Transition):
-    """Signals that this transition terminates a comment."""
+class _SelfDelimitingTransition(Transition):
+    """Signals that this transition terminates token that is self-delimiting, e.g. quoted string, container, comment."""
 
 
 @coroutine
@@ -334,7 +336,7 @@ def number_zero_start_handler(c, ctx):
     ctx = ctx.derive_ion_type(IonType.INT)
     ctx.value.append(c)
     c, _ = yield
-    if c in _NUMBER_TERMINATORS:
+    if c in _VALUE_TERMINATORS:
         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
     yield ctx.immediate_transition(_ZERO_START_TABLE[c](c, ctx))
 
@@ -348,7 +350,7 @@ def number_or_timestamp_handler(c, ctx):
     c, self = yield
     trans = (Transition(None, self), None)
     while True:
-        if c in _NUMBER_TERMINATORS:
+        if c in _VALUE_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         else:
             if c not in _DIGITS:
@@ -372,7 +374,7 @@ def _generate_numeric_handler(charset, transition, assertion, illegal_before_und
         c, self = yield
         trans = (Transition(None, self), None)
         while True:
-            if c in _NUMBER_TERMINATORS:
+            if c in _VALUE_TERMINATORS:
                 if prev == _UNDERSCORE or prev in illegal_at_end:
                     _illegal_character(c, ctx, '%s at end of number.' % (_c(prev),))
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
@@ -493,17 +495,17 @@ def timestamp_handler(c, ctx):
     state = State.YEAR
     nxt = _DIGITS
     if prev == _T:
-        nxt += _NUMBER_TERMINATORS
+        nxt += _VALUE_TERMINATORS
     while True:
         if c not in nxt:
             _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_c(x) for x in nxt], state))
-        if c in _NUMBER_TERMINATORS:
+        if c in _VALUE_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         else:
             if c == _Z:
-                nxt = _NUMBER_TERMINATORS
+                nxt = _VALUE_TERMINATORS
             elif c == _T:
-                nxt = _NUMBER_TERMINATORS + _DIGITS
+                nxt = _VALUE_TERMINATORS + _DIGITS
             elif c in _TIMESTAMP_DELIMITERS:
                 nxt = _DIGITS
             elif c in _DIGITS:
@@ -515,7 +517,7 @@ def timestamp_handler(c, ctx):
                     if state == State.MONTH:
                         nxt = _TIMESTAMP_YEAR_DELIMITERS
                     elif state == State.DAY:
-                        nxt = (_T,) + _NUMBER_TERMINATORS
+                        nxt = (_T,) + _VALUE_TERMINATORS
                     elif state == State.HOUR:
                         nxt = (_COLON,)
                     elif state == State.MINUTE:
@@ -525,9 +527,9 @@ def timestamp_handler(c, ctx):
                     elif state == State.FRACTIONAL:
                         nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
                     elif state == State.OFF_HOUR:
-                        nxt = (_COLON,) + _NUMBER_TERMINATORS
+                        nxt = (_COLON,) + _VALUE_TERMINATORS
                     elif state == State.OFF_MINUTE:
-                        nxt = _NUMBER_TERMINATORS
+                        nxt = _VALUE_TERMINATORS
                     else:
                         raise ValueError('Unknown timestamp state %r.' % (state,))
                 else:
@@ -552,21 +554,23 @@ def string_handler(c, ctx, is_field_name=False):
     prev = c
     c, self = yield
     trans = (Transition(None, self), None)
-    done = False
-    while not done:
+    while True:
         # TODO error on disallowed escape sequences
         if c == _DOUBLE_QUOTE and prev != _BACKSLASH:
-            done = True
+            break
         else:
             # TODO should a backslash be appended?
             val.append(c)
         prev = c
         c, _ = yield trans
     if is_field_name:
+        c, _ = yield trans  # read past the closing "
         yield ctx.immediate_transition(ctx.whence)
     elif not is_clob:
-        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value,
+                                   trans_cls=_SelfDelimitingTransition)
     else:
+        c, _ = yield trans  # read past the closing "
         yield ctx.immediate_transition(clob_end_handler(c, ctx))
 
 
@@ -592,7 +596,7 @@ def comment_handler(c, ctx, whence):
         else:
             if c == _NEWLINE:
                 done = True
-    yield (_CommentTransition(None, whence), ctx)
+    yield ctx.immediate_transition(whence, trans_cls=_SelfDelimitingTransition)
 
 
 @coroutine
@@ -688,7 +692,7 @@ def typed_null_handler(c, ctx):
     trans = (Transition(None, self), None)
     while True:
         if done:
-            if c in _NUMBER_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
+            if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, nxt.ion_type, None)
             else:
                 _illegal_character(c, ctx, 'Illegal null type.')
@@ -735,7 +739,7 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 transitioned, transition = match_transition()
                 if transitioned:
                     pass
-                elif c in _WHITESPACE or c == _SLASH or c in ctx.container.delimiter or c in ctx.container.end_sequence:
+                elif c in _VALUE_TERMINATORS:
                     if is_field_name:
                         _illegal_character(c, ctx, 'nan keyword as field name not allowed.')
                     transition = ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, value)
@@ -776,7 +780,7 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 # This might be an annotation or a field name
                 ctx = ctx.derive_pending_symbol(val)
                 trans = ctx.immediate_transition(ctx.whence)
-            elif c in ctx.container.end_sequence or c in ctx.container.delimiter or (in_sexp and c in _OPERATORS):
+            elif c in _VALUE_TERMINATORS or (in_sexp and c in _OPERATORS):
                 ctx = ctx.derive_ion_type(IonType.SYMBOL)
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val)
             else:
@@ -806,7 +810,7 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
                 if match_index < len(_INF_SEQUENCE):
                     maybe_inf = c == _INF_SEQUENCE[match_index]
                 else:
-                    if c in _NUMBER_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
+                    if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
                         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, bytearray(c_start + b'inf'))
                     else:
                         maybe_inf = False
@@ -896,7 +900,7 @@ def symbol_handler(c, ctx, is_field_name=False):
     trans = (Transition(None, self), None)
     while True:
         if c not in _WHITESPACE:
-            if prev in _WHITESPACE or c in _NUMBER_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
+            if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
                 break
             if c not in _IDENTIFIER_CHARACTERS:
                 _illegal_character(c, ctx.derive_ion_type(IonType.SYMBOL))
@@ -1206,6 +1210,11 @@ def _container_handler(c, ctx):
                         if len(queue) > 0:
                             c = queue.read_byte()
                             read_next = False
+                    elif isinstance(trans, _SelfDelimitingTransition):
+                        # The end of the value has been reached, and c needs to be updated
+                        if len(queue) > 0:
+                            c = queue.read_byte()
+                            read_next = False
                     else:
                         read_next = False
                     complete = ctx.depth == 0
@@ -1216,7 +1225,7 @@ def _container_handler(c, ctx):
                         trans = next_transition
                 elif self is trans.delegate:
                     assert next_transition is None
-                    in_comment = isinstance(trans, _CommentTransition)
+                    in_comment = isinstance(trans, _SelfDelimitingTransition)
                     if is_field_name:
                         if c == _COLON or not (c == _SLASH and in_comment):
                             read_next = False
