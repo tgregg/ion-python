@@ -1128,6 +1128,7 @@ def _container_handler(c, ctx):
     while True:
         if c in ctx.container.end_sequence:
             if child_context and child_context.pending_symbol is not None:
+                # TODO this branch appears unused. Investigate if it can happen.
                 assert not child_context.value
                 yield child_context.event_transition(
                     IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol)[0]
@@ -1139,6 +1140,8 @@ def _container_handler(c, ctx):
         if c in ctx.container.delimiter:
             if child_context and child_context.pending_symbol is not None:
                 assert not child_context.value
+                if ctx.ion_type is IonType.STRUCT and child_context.field_name is None:
+                    _illegal_character(c, ctx, 'Encountered STRUCT value without field name.')
                 yield child_context.event_transition(
                     IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol)[0]
                 child_context = None

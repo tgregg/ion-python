@@ -71,7 +71,8 @@ _BAD = (
     (b'{foo:bar/**/baz:zar}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
     (b'[abc 123]', e_start_list(), e_symbol(value=b'abc')),
     (b'{foo::bar:baz}', e_start_struct()),
-    #(b'{foo, bar}', e_start_struct()),  # TODO should fail
+    (b'{foo, bar}', e_start_struct()),
+    (b'{42, 43}', e_start_struct()),
     (b'[abc, , 123]', e_start_list(), e_symbol(value=b'abc')),
     (b'{foo:bar, ,}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
     (b'{true:123}', e_start_struct()),
