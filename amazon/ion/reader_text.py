@@ -750,7 +750,7 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
     keyword_trans = None
     match_index = 0
     while True:
-        def check_keyword(keyword_sequence, ion_type, value, match_transition=lambda: (False, None)):
+        def check_keyword(name, keyword_sequence, ion_type, value, match_transition=lambda: (False, None)):
             maybe_keyword = True
             transition = None
             if match_index < len(keyword_sequence):
@@ -761,12 +761,12 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
                     pass
                 elif c in _VALUE_TERMINATORS:
                     if is_field_name:
-                        _illegal_character(c, ctx, 'nan keyword as field name not allowed.')
+                        _illegal_character(c, ctx, '%s keyword as field name not allowed.' % (name,))
                     transition = ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, value)
                 elif c == _COLON:
                     message = ''
                     if is_field_name:
-                        message = 'nan keyword as field name not allowed.'
+                        message = '%s keyword as field name not allowed.' % (name,)
                     _illegal_character(c, ctx, message)
                 elif in_sexp and c in _OPERATORS:
                     transition = ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, value)
@@ -782,13 +782,13 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
                         _illegal_character(c, ctx, "Illegal character in field name.")
                     transition = ctx.immediate_transition(typed_null_handler(c, ctx))
                 return found, transition
-            maybe_null, keyword_trans = check_keyword(_NULL_SEQUENCE.sequence, IonType.NULL, None, check_null_dot)
+            maybe_null, keyword_trans = check_keyword('null', _NULL_SEQUENCE.sequence, IonType.NULL, None, check_null_dot)
         if maybe_nan:
-            maybe_nan, keyword_trans = check_keyword(_NAN_SEQUENCE, IonType.FLOAT, val)
+            maybe_nan, keyword_trans = check_keyword('nan', _NAN_SEQUENCE, IonType.FLOAT, val)
         elif maybe_true:
-            maybe_true, keyword_trans = check_keyword(_TRUE_SEQUENCE, IonType.BOOL, True)
+            maybe_true, keyword_trans = check_keyword('true', _TRUE_SEQUENCE, IonType.BOOL, True)
         elif maybe_false:
-            maybe_false, keyword_trans = check_keyword(_FALSE_SEQUENCE, IonType.BOOL, False)
+            maybe_false, keyword_trans = check_keyword('false', _FALSE_SEQUENCE, IonType.BOOL, False)
         if maybe_null or maybe_nan or maybe_true or maybe_false:
             if keyword_trans is not None:
                 trans = keyword_trans
@@ -1128,8 +1128,9 @@ def _container_handler(c, ctx):
     while True:
         if c in ctx.container.end_sequence:
             if child_context and child_context.pending_symbol is not None:
-                # TODO this branch appears unused. Investigate if it can happen.
                 assert not child_context.value
+                if ctx.ion_type is IonType.STRUCT and child_context.field_name is None:
+                    _illegal_character(c, ctx, 'Encountered STRUCT value %s without field name.' % (child_context.pending_symbol,))
                 yield child_context.event_transition(
                     IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol)[0]
             # Yield the close event and go to enclosing container.
@@ -1141,7 +1142,7 @@ def _container_handler(c, ctx):
             if child_context and child_context.pending_symbol is not None:
                 assert not child_context.value
                 if ctx.ion_type is IonType.STRUCT and child_context.field_name is None:
-                    _illegal_character(c, ctx, 'Encountered STRUCT value without field name.')
+                    _illegal_character(c, ctx, 'Encountered STRUCT value %s without field name.' % (child_context.pending_symbol,))
                 yield child_context.event_transition(
                     IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol)[0]
                 child_context = None
