@@ -60,6 +60,7 @@ _BAD = (
     (b'-0001T',),
     (b'00-01T',),
     (b'2000-01',),
+    (b'2000-001T',),
     (b'2007-02-23T20:14:33.Z',),
     (b'1a',),
     (b'foo-',),
@@ -76,6 +77,12 @@ _BAD = (
     (b'{{\'"foo"}}',),
     (b'{foo:bar/**/baz:zar}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
     (b'[abc 123]', e_start_list(), e_symbol(value=b'abc')),
+    #(b'{abc:}', e_start_struct()),  # TODO should fail
+    (b'[abc:]', e_start_list()),
+    (b'(abc:)', e_start_sexp()),
+    #(b'[abc::]', e_start_list()),  # TODO should fail
+    #(b'(abc::)', e_start_sexp()),  # TODO should fail
+    (b'{abc::}', e_start_struct()),
     (b'{foo::bar}', e_start_struct()),
     (b'{foo::bar:baz}', e_start_struct()),
     (b'{foo, bar}', e_start_struct()),
@@ -187,6 +194,8 @@ _GOOD = (
     (b'{/**///\n}',) + _good_struct(),
     (b'(/**///\n)',) + _good_sexp(),
     (b'[/**///\n]',) + _good_list(),
+    (b'(foo)',) + _good_sexp(e_symbol(b'foo')),
+    (b'[foo]',) + _good_list(e_symbol(b'foo')),
     (b'/*foo*///bar\n/*baz*/',),
     (b'\'\'::123 ', e_int(value=b'123', annotations=(b'',))),
     (b'{foo:zar::[], bar: (), baz:{}}',) + _good_struct(
@@ -200,6 +209,7 @@ _GOOD = (
         e_start_sexp(), e_end_sexp(),
     ),
     (b'{\'\':bar,}',) + _good_struct(e_symbol(field_name=b'', value=b'bar')),
+    (b'{\'\':bar}',) + _good_struct(e_symbol(field_name=b'', value=b'bar')),
     (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(field_name=b'foobar', value=b'baz')) # TODO
 )
 
@@ -208,6 +218,7 @@ _UNSPACED_SEXPS = (
     (b'(a/b)',) + _good_sexp(e_symbol(b'a'), e_symbol(b'/'), e_symbol(b'b')),
     (b'(a+b)',) + _good_sexp(e_symbol(b'a'), e_symbol(b'+'), e_symbol(b'b')),
     (b'(a-b)',) + _good_sexp(e_symbol(b'a'), e_symbol(b'-'), e_symbol(b'b')),
+    (b'(/%)',) + _good_sexp(e_symbol(b'/%')),
     (b'(foo //bar\n::baz)',) + _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',))),
     (b'(foo/*bar*/ ::baz)',) + _good_sexp(e_symbol(value=b'baz', annotations=(b'foo',))),
     (b'(\'a b\' //\n::cd)',) + _good_sexp(e_symbol(value=b'cd', annotations=(b'a b',))),
