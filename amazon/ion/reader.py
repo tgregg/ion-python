@@ -104,21 +104,19 @@ class BufferQueue(object):
         self.position += 1
         return octet
 
-    def unread(self, seq):
-        # TODO add unit testing to test_reader_buffer
-        try:
-            num_bytes = len(seq)
-        except TypeError:
-            num_bytes = 1
-            seq = chr(seq)  # TODO check
-        overflow = num_bytes - self.__offset
-        if overflow > 0:
-            self.__segments.appendleft(seq[0:overflow])  # TODO untested
-            self.__offset = 0
+    def unread(self, c):
+        if self.position < 1:
+            raise IndexError('Cannot unread an empty buffer queue.')
+        c = six.int2byte(c)
+        if self.__offset == 0:
+            self.__segments.appendleft([c])
         else:
-            self.__offset -= num_bytes
-        self.__size += num_bytes
-        self.position -= num_bytes
+            self.__offset -= 1
+            existing = self.__segments[0][self.__offset]
+            if existing != c:
+                raise ValueError('Attempted to unread %s when %s was expected.' % (c, existing))
+        self.__size += 1
+        self.position -= 1
 
     def skip(self, length):
         """Removes ``length`` bytes and returns the number length still required to skip"""

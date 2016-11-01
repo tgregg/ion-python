@@ -44,6 +44,14 @@ def read_byte(ch):
     return read(ord(ch))
 
 
+def unread_byte(ch):
+    def action(queue):
+        queue.unread(ord(ch))
+        return 1, -1
+
+    return action
+
+
 def skip(amount, expected_rem=0):
     def action(queue):
         rem = queue.skip(amount)
@@ -97,6 +105,20 @@ class _P(record('desc', 'actions')):
         ],
     ),
     _P(
+        desc='EMPTY UNREAD',
+        actions=[
+            expect(IndexError, unread_byte(b'a')),
+        ],
+    ),
+    _P(
+        desc='INCORRECT UNREAD',
+        actions=[
+            extend(b'ab'),
+            read_byte(b'a'),
+            expect(ValueError, unread_byte(b'c')),
+        ],
+    ),
+    _P(
         desc='SINGLE FULL',
         actions=[
             extend(b'abcd'),
@@ -129,6 +151,15 @@ class _P(record('desc', 'actions')):
         ],
     ),
     _P(
+        desc='SINGLE UNREAD',
+        actions=[
+            extend(b'a'),
+            read_byte(b'a'),
+            unread_byte(b'a'),
+            read_byte(b'a')
+        ]
+    ),
+    _P(
         desc='MULTI ALL',
         actions=[
             extend(b'abcd'),
@@ -141,13 +172,21 @@ class _P(record('desc', 'actions')):
 
             extend(b'ab'),
             extend(b'cd'),
+            read(b'abc'),
+            unread_byte(b'c'),
+            unread_byte(b'b'),
+            read(b'bcd'),
+            extend(b'EF'),
+            extend(b'GH'),
             extend(b'ef'),
             extend(b'gh'),
-            read_byte(b'a'),
             skip(4),
+            read_byte(b'e'),
             read_byte(b'f'),
             read_byte(b'g'),
             read_byte(b'h'),
+            unread_byte(b'h'),
+            read_byte(b'h')
         ],
     ),
     _P(

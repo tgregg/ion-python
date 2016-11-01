@@ -30,8 +30,8 @@ from amazon.ion.reader import BufferQueue, reader_trampoline
 from amazon.ion.util import record, coroutine, Enum
 
 
-_o = ord
-_c = chr
+_o = six.byte2int
+_c = six.int2byte
 
 
 def _illegal_character(c, ctx, message=''):
@@ -647,21 +647,27 @@ def triple_quote_string_handler(c, ctx, is_field_name=False):
         else:
             if in_data:
                 # Any quotes found in the meantime are part of the data
-                for i in range(quotes):
-                    val.append(_SINGLE_QUOTE)
+                val.extend([_SINGLE_QUOTE]*quotes)
                 quotes = 0
                 # TODO should a backslash be appended - why is Java inconsistent between double- and triple-quoted?
                 if c != _BACKSLASH:
                     val.append(c)
             else:
                 if quotes > 0:
-                    ctx.queue.unread(tuple([_c(_SINGLE_QUOTE)]*quotes + [c]))  # un-read the skipped quotes AND c, which will be consumed again later
-                    if is_field_name:
-                        _illegal_character(c, ctx, "Malformed triple-quoted field name: %s" % (val,))
-                    elif not is_clob:
-                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                    assert quotes < 3
+                    if is_field_name or is_clob:
+                        # There are at least two values here, which is illegal for field names or within clobs.
+                        _illegal_character(c, ctx, "Malformed triple-quoted text: %s" % (val,))
                     else:
-                        trans = ctx.immediate_transition(clob_end_handler(c, ctx))
+                        # This string value is followed by a quoted symbol.
+                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                        next_ctx = ctx.derive_child_context(ctx.whence)
+                        if quotes == 1:
+                            next_immediate = next_ctx.immediate_transition(quoted_symbol_handler(c, next_ctx, False))
+                            trans = [trans[0], next_immediate[0]], next_ctx
+                        else:  # quotes == 2
+                            next_ctx = next_ctx.derive_pending_symbol()
+                            trans = trans[0], next_ctx
                 elif c not in _WHITESPACE:
                     if is_clob:
                         trans = ctx.immediate_transition(clob_end_handler(c, ctx))
@@ -1019,7 +1025,7 @@ def _generate_container_start_handler(ion_type, before_yield=lambda c, ctx: None
     return container_start_handler
 
 
-# Struct requires unread because we had to read one char past the { to make sure it wasn't a lob.
+# Struct requires unread_byte because we had to read one char past the { to make sure it wasn't a lob.
 struct_handler = _generate_container_start_handler(IonType.STRUCT, lambda c, ctx: ctx.queue.unread(c))
 list_handler = _generate_container_start_handler(IonType.LIST)
 sexp_handler = _generate_container_start_handler(IonType.SEXP)

@@ -93,6 +93,7 @@ _BAD = (
     (b'{null.clob:123}', e_start_struct()),
     (b'{%:123}', e_start_struct()),
     (b'\'\'\'foo\'\'\'/\'\'\'bar\'\'\'',),  # Dangling slash at the top level.
+    (b'{{\'\'\'foo\'\'\' \'\'bar\'\'\'}}',),
     (b'{\'\'\'foo\'\'\'/**/\'\'bar\'\'\':baz}', e_start_struct()),  # Missing an opening ' before "bar".
     (b'(1..)', e_start_sexp()),
     (b'(1.a)', e_start_sexp()),
@@ -118,6 +119,7 @@ _INCOMPLETE = (
     (b'foo',),  # Might be an annotation.
     (b'\'foo\'',),  # Might be an annotation.
     (b'\'\'\'foo\'\'\'/**/',),  # Might be followed by another triple-quoted string.
+    (b'\'\'\'\'',),  # Might be followed by another triple-quoted string.
     (b'123',),  # Might have more digits.
     (b'-',),
     (b'+',),
@@ -166,10 +168,13 @@ def _good_list(*events):
 
 _GOOD = (
     (b'42[]', e_int(b'42')) + _good_list(),
+    (b'\'foo\'123 ', e_symbol(b'foo'), e_int(b'123')),
     (b'null()', e_null()) + _good_sexp(),
     (b'tru{}', e_symbol(b'tru')) + _good_struct(),
     (b'+inf"bar"', e_float(b'+inf'), e_string(b'bar')),
     (b'foo\'bar\'"baz"', e_symbol(b'foo'), e_symbol(b'bar'), e_string(b'baz')),
+    (b'\'\'\'foo\'\'\'\'\'123 ', e_string(b'foo'), e_symbol(b''), e_int(b'123')),
+    (b'\'\'\'foo\'\'\'\'abc\'123 ', e_string(b'foo'), e_symbol(b'abc'), e_int(b'123')),
     (b'[]',) + _good_list(),
     (b'()',) + _good_sexp(),
     (b'{}',) + _good_struct(),
