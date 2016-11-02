@@ -171,14 +171,14 @@ _NULL_STARTS = {
 
 
 class _Container(record(
-    'end_sequence', 'delimiter', 'ion_type'
+    'end_sequence', 'delimiter', 'ion_type', 'is_delimited'
 )):
     """TODO"""
 
-_C_TOP_LEVEL = _Container((), (), None)
-_C_STRUCT = _Container((_CLOSE_BRACE,), (_COMMA,), IonType.STRUCT)
-_C_LIST = _Container((_CLOSE_BRACKET,), (_COMMA,), IonType.LIST)
-_C_SEXP = _Container((_CLOSE_PAREN,), (), IonType.SEXP)
+_C_TOP_LEVEL = _Container((), (), None, False)
+_C_STRUCT = _Container((_CLOSE_BRACE,), (_COMMA,), IonType.STRUCT, True)
+_C_LIST = _Container((_CLOSE_BRACKET,), (_COMMA,), IonType.LIST, True)
+_C_SEXP = _Container((_CLOSE_PAREN,), (), IonType.SEXP, False)
 
 
 class _HandlerContext(record(
@@ -670,6 +670,9 @@ def triple_quote_string_handler(c, ctx, is_field_name=False):
                         _illegal_character(c, ctx, "Malformed triple-quoted text: %s" % (val,))
                     else:
                         # This string value is followed by a quoted symbol.
+                        if ctx.container.is_delimited:
+                            _illegal_character(c, ctx, 'Delimiter %s not found after value.'
+                                               % (_c(ctx.container.delimiter[0]),))
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                         if quotes == 1:
                             trans = _composite_transition(trans[0], ctx,
@@ -834,7 +837,7 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
                         next_ctx.value.append(ch)
                 break
             c, self = yield trans
-        if ctx.container.ion_type is not IonType.SEXP:
+        if ctx.container is not _C_SEXP:
             _illegal_character(c, next_ctx is None and ctx or next_ctx)
         if match_index == 0:
             if c in _OPERATORS:
@@ -938,7 +941,7 @@ def _generate_single_quote_handler(on_single_quote, on_other):
 
 two_single_quotes_handler = _generate_single_quote_handler(
     triple_quote_string_handler,
-    lambda c, ctx, is_field_name: ctx.derive_pending_symbol().immediate_transition(ctx.whence) # Empty symbol.
+    lambda c, ctx, is_field_name: ctx.derive_pending_symbol().immediate_transition(ctx.whence)  # Empty symbol.
 )
 string_or_symbol_handler = _generate_single_quote_handler(
     two_single_quotes_handler,
@@ -1119,7 +1122,6 @@ _VALUE_START_TABLE = _whitelist(
             _OPEN_BRACKET: list_handler,
             _SINGLE_QUOTE: string_or_symbol_handler,
             _DOUBLE_QUOTE: string_handler,
-            _SLASH: sexp_slash_handler,  # Comments are handled as a special case, not through _START_TABLE
         },
         (_DIGITS[1:], number_or_timestamp_handler)
     ),
@@ -1169,9 +1171,10 @@ def _container_handler(c, ctx):
         # Loop over all values in this container.
         if c in ctx.container.end_sequence:
             if child_context is not None:
-                if has_pending_symbol():
-                    require_field_name()
-                if not delimiter_required and is_value_decorated():
+                symbol_event = pending_symbol_value()
+                if symbol_event is not None:
+                    yield symbol_event
+                elif not delimiter_required and is_value_decorated():
                     _illegal_character(c, child_context,
                                        'Dangling field name (%s) and/or annotation(s) (%r) at end of container.'
                                        % (child_context.field_name, child_context.annotations))
@@ -1231,7 +1234,7 @@ def _container_handler(c, ctx):
                         # It's a symbol value delimited by something other than a comma (i.e. whitespace or comment)
                         yield symbol_value_event()
                         child_context = None
-                        delimiter_required = ctx.container is _C_LIST or ctx.container is _C_STRUCT
+                        delimiter_required = ctx.container.is_delimited
                     continue
                 if child_context is None or not is_value_decorated():
                     # This is the start of a new child value.
@@ -1256,11 +1259,12 @@ def _container_handler(c, ctx):
                 trans, child_context = handler.send((c, handler))
                 next_transition = None
                 if not hasattr(trans, 'event'):
-                    # Transitions are iterable, so instead of checking to see if the returned value is iterable, we have
-                    # to check to see if it's a simple Transition rather than a sequence of Transitions.
+                    # This is a composite transition, i.e. it contains an event transition followed by an immediate
+                    # transition to the handler coroutine for the next token.
                     assert len(trans) == 2
-                    next_transition = trans[1]
-                    trans = trans[0]
+                    trans, next_transition = trans
+                    assert trans.event is not None
+                    assert next_transition.event is None
                 if trans.event is not None:
                     # This child value is finished. c is now the first character in the next value or sequence.
                     # Hence, a new character should not be read; it should be provided to the handler for the next
@@ -1280,7 +1284,7 @@ def _container_handler(c, ctx):
                     else:
                         read_next = False
                     complete = ctx.depth == 0
-                    delimiter_required = ctx.container is _C_LIST or ctx.container is _C_STRUCT
+                    delimiter_required = ctx.container.is_delimited
                     if next_transition is None:
                         break
                     else:
