@@ -76,13 +76,25 @@ _BAD = (
     (b'{{\'\' \'foo\'\'\'}}',),
     (b'{{\'"foo"}}',),
     (b'{foo:bar/**/baz:zar}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
+    (b'{foo:bar/**/baz}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
     (b'[abc 123]', e_start_list(), e_symbol(value=b'abc')),
-    #(b'{abc:}', e_start_struct()),  # TODO should fail
+    (b'[abc/**/def]', e_start_list(), e_symbol(value=b'abc')),
+    (b'{abc:}', e_start_struct()),
+    (b'{abc :}', e_start_struct()),
+    (b'{abc : //\n}', e_start_struct()),
     (b'[abc:]', e_start_list()),
     (b'(abc:)', e_start_sexp()),
-    #(b'[abc::]', e_start_list()),  # TODO should fail
-    #(b'(abc::)', e_start_sexp()),  # TODO should fail
+    (b'[abc::]', e_start_list()),
+    (b'(abc::)', e_start_sexp()),
     (b'{abc::}', e_start_struct()),
+    (b'[abc ::]', e_start_list()),
+    (b'(abc/**/::)', e_start_sexp()),
+    (b'{abc//\n::}', e_start_struct()),
+    (b'[abc::/**/]', e_start_list()),
+    (b'(abc:: )', e_start_sexp()),
+    (b'{abc:://\n}', e_start_struct()),
+    (b'{foo:abc::}', e_start_struct()),
+    (b'{foo:abc::/**/}', e_start_struct()),
     (b'{foo::bar}', e_start_struct()),
     (b'{foo::bar:baz}', e_start_struct()),
     (b'{foo, bar}', e_start_struct()),
@@ -90,6 +102,9 @@ _BAD = (
     (b'{123}', e_start_struct()),
     (b'{42, 43}', e_start_struct()),
     (b'[abc, , 123]', e_start_list(), e_symbol(value=b'abc')),
+    (b'[,]', e_start_list()),
+    (b'(,)', e_start_sexp()),
+    (b'{,}', e_start_struct()),
     (b'{foo:bar, ,}', e_start_struct(), e_symbol(value=b'bar', field_name=b'foo')),
     (b'{true:123}', e_start_struct()),
     (b'{false:123}', e_start_struct()),
@@ -210,7 +225,7 @@ _GOOD = (
     ),
     (b'{\'\':bar,}',) + _good_struct(e_symbol(field_name=b'', value=b'bar')),
     (b'{\'\':bar}',) + _good_struct(e_symbol(field_name=b'', value=b'bar')),
-    (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(field_name=b'foobar', value=b'baz')) # TODO
+    (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(field_name=b'foobar', value=b'baz'))
 )
 
 
@@ -232,7 +247,7 @@ _UNSPACED_SEXPS = (
     (b'(null-100)',) + _good_sexp(e_null(), e_int(b'-100')),
     (b'(null\'a\')',) + _good_sexp(e_null(), e_symbol(b'a')),
     (b'(null\'a\'::b)',) + _good_sexp(e_null(), e_symbol(value=b'b', annotations=(b'a',))),
-    (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b')),  # TODO grammar actually disallows DOT after any null, but ion-java doesn't care
+    (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(b'.'), e_symbol(b'b')),
     (b'(42\'a\'::b)',) + _good_sexp(e_int(b'42'), e_symbol(value=b'b', annotations=(b'a',))),
     (b'(1.23[])',) + _good_sexp(e_decimal(b'1.23'), e_start_list(), e_end_list()),
     (b'(\'\'\'foo\'\'\'/\'\'\'bar\'\'\')',) + _good_sexp(e_string(b'foo'), e_symbol(b'/'), e_string(b'bar')),
@@ -250,7 +265,6 @@ _UNSPACED_SEXPS = (
     (b'(-inf+inf)',) + _good_sexp(e_float(b'-inf'), e_float(b'+inf')),
     (b'(+inf\'foo\')',) + _good_sexp(e_float(b'+inf'), e_symbol(b'foo')),
     (b'(-inf\'foo\'::bar)',) + _good_sexp(e_float(b'-inf'), e_symbol(value=b'bar', annotations=(b'foo',))),
-    # (b'(nan42)',) + _good_sexp(e_float(b'nan'), e_int(b'42')),  # TODO If I'm reading the grammar correctly, this should pass, but ion-java doesn't do this...
     # TODO the inf tests do not match ion-java's behavior. They should be reconciled. I believe this is more correct.
     (b'(- -inf-inf-in-infs-)',) + _good_sexp(
         e_symbol(b'-'), e_float(b'-inf'), e_float(b'-inf'), e_symbol(b'-'),

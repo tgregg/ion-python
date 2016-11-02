@@ -1144,11 +1144,17 @@ def _container_handler(c, ctx):
     def pending_symbol_value():
         if has_pending_symbol():
             assert not child_context.value
-            if ctx.ion_type is IonType.STRUCT and child_context.field_name is None:
-                _illegal_character(c, ctx,
-                                   'Encountered STRUCT value %s without field name.' % (child_context.pending_symbol,))
+            require_field_name()
             return symbol_value_event()
         return None
+
+    def require_field_name():
+        if ctx.ion_type is IonType.STRUCT and child_context.field_name is None:
+            _illegal_character(c, ctx,
+                               'Encountered STRUCT value %s without field name.' % (child_context.pending_symbol,))
+
+    def is_value_decorated():
+        return child_context.annotations or child_context.field_name is not None
 
     def try_read_byte():
         ch = c
@@ -1160,9 +1166,13 @@ def _container_handler(c, ctx):
     while True:
         # Loop over all values in this container.
         if c in ctx.container.end_sequence:
-            symbol_event = pending_symbol_value()
-            if symbol_event is not None:
-                yield symbol_event
+            if child_context is not None:
+                if has_pending_symbol():
+                    require_field_name()
+                if not delimiter_required and is_value_decorated():
+                    _illegal_character(c, child_context,
+                                       'Dangling field name (%s) and/or annotation(s) (%r) at end of container.'
+                                       % (child_context.field_name, child_context.annotations))
             # Yield the close event and go to enclosing container. This coroutine instance will never resume.
             yield Transition(
                 IonEvent(IonEventType.CONTAINER_END, ctx.ion_type, depth=ctx.depth-1),
@@ -1205,22 +1215,23 @@ def _container_handler(c, ctx):
                             is_field_name = False
                             child_context = child_context.derive_field_name()
                             c = None
-                            continue
-                        if len(queue) == 0:
-                            yield ctx.read_data_event(self)
-                        peek = queue.read_byte()
-                        if peek == _COLON:
-                            child_context = child_context.derive_annotation()
-                            c = None  # forces another character to be read safely
-                            continue
                         else:
-                            # Colon that doesn't indicate a field name or annotation.
-                            _illegal_character(c, child_context)
+                            if len(queue) == 0:
+                                yield ctx.read_data_event(self)
+                            peek = queue.read_byte()
+                            if peek == _COLON:
+                                child_context = child_context.derive_annotation()
+                                c = None  # forces another character to be read safely
+                            else:
+                                # Colon that doesn't indicate a field name or annotation.
+                                _illegal_character(c, child_context)
                     else:
-                        # It's a symbol value
+                        # It's a symbol value delimited by something other than a comma (i.e. whitespace or comment)
                         yield symbol_value_event()
                         child_context = None
-                if child_context is None or (not child_context.annotations and child_context.field_name is None):
+                        delimiter_required = ctx.container is _C_LIST or ctx.container is _C_STRUCT
+                    continue
+                if child_context is None or not is_value_decorated():
                     # This is the start of a new child value.
                     child_context = ctx.derive_child_context(self)
                 if is_field_name:
@@ -1267,7 +1278,7 @@ def _container_handler(c, ctx):
                     else:
                         read_next = False
                     complete = ctx.depth == 0
-                    delimiter_required = not ((not ctx.container.ion_type) or ctx.container.ion_type is IonType.SEXP)
+                    delimiter_required = ctx.container is _C_LIST or ctx.container is _C_STRUCT
                     if next_transition is None:
                         break
                     else:
