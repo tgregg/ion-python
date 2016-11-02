@@ -171,7 +171,7 @@ _NULL_STARTS = {
 
 
 class _Container(record(
-    'end_sequence', 'delimiter', 'ion_type', 'is_delimited'
+    'end', 'delimiter', 'ion_type', 'is_delimited'
 )):
     """TODO"""
 
@@ -1148,17 +1148,14 @@ def _container_handler(c, ctx):
     def pending_symbol_value():
         if has_pending_symbol():
             assert not child_context.value
-            require_field_name()
+            if ctx.ion_type is IonType.STRUCT and child_context.field_name is None:
+                _illegal_character(c, ctx,
+                                   'Encountered STRUCT value %s without field name.' % (child_context.pending_symbol,))
             return symbol_value_event()
         return None
 
-    def require_field_name():
-        if ctx.ion_type is IonType.STRUCT and child_context.field_name is None:
-            _illegal_character(c, ctx,
-                               'Encountered STRUCT value %s without field name.' % (child_context.pending_symbol,))
-
     def is_value_decorated():
-        return child_context.annotations or child_context.field_name is not None
+        return child_context is not None and (child_context.annotations or child_context.field_name is not None)
 
     def try_read_byte():
         ch = c
@@ -1169,34 +1166,31 @@ def _container_handler(c, ctx):
 
     while True:
         # Loop over all values in this container.
-        if c in ctx.container.end_sequence:
-            if child_context is not None:
-                symbol_event = pending_symbol_value()
-                if symbol_event is not None:
-                    yield symbol_event
-                elif not delimiter_required and is_value_decorated():
-                    _illegal_character(c, child_context,
-                                       'Dangling field name (%s) and/or annotation(s) (%r) at end of container.'
-                                       % (child_context.field_name, child_context.annotations))
-            # Yield the close event and go to enclosing container. This coroutine instance will never resume.
-            yield Transition(
-                IonEvent(IonEventType.CONTAINER_END, ctx.ion_type, depth=ctx.depth-1),
-                ctx.whence
-            )
-            raise ValueError('Resumed a finished container handler.')
-        if c in ctx.container.delimiter:
+        if c in ctx.container.end or c in ctx.container.delimiter:
             symbol_event = pending_symbol_value()
             if symbol_event is not None:
                 yield symbol_event
                 child_context = None
                 delimiter_required = True
-            if not delimiter_required:
-                _illegal_character(c, ctx.derive_child_context(None),
-                                   'Encountered delimiter %s without preceding value.'
-                                   % (_c(ctx.container.delimiter[0]),))
-            is_field_name = ctx.ion_type is IonType.STRUCT
-            delimiter_required = False
-            c = None
+            if c in ctx.container.end:
+                if not delimiter_required and is_value_decorated():
+                    _illegal_character(c, child_context,
+                                       'Dangling field name (%s) and/or annotation(s) (%r) at end of container.'
+                                       % (child_context.field_name, child_context.annotations))
+                # Yield the close event and go to enclosing container. This coroutine instance will never resume.
+                yield Transition(
+                    IonEvent(IonEventType.CONTAINER_END, ctx.ion_type, depth=ctx.depth-1),
+                    ctx.whence
+                )
+                raise ValueError('Resumed a finished container handler.')
+            else:
+                if not delimiter_required:
+                    _illegal_character(c, ctx.derive_child_context(None),
+                                       'Encountered delimiter %s without preceding value.'
+                                       % (_c(ctx.container.delimiter[0]),))
+                is_field_name = ctx.ion_type is IonType.STRUCT
+                delimiter_required = False
+                c = None
         if c is not None and c not in _WHITESPACE:
             if c == _SLASH:
                 if child_context is None:
@@ -1211,32 +1205,32 @@ def _container_handler(c, ctx):
                 # This is not the delimiter, or whitespace, or the start of a comment. Throw.
                 _illegal_character(c, ctx.derive_child_context(None), 'Delimiter %s not found after value.'
                                    % (_c(ctx.container.delimiter[0]),))
-            else:
-                if has_pending_symbol():
-                    # A character besides whitespace, comments, and delimiters has been found, and there is a pending
-                    # symbol. That pending symbol is either an annotation, a field name, or a symbol value.
-                    if c == _COLON:
-                        if is_field_name:
-                            is_field_name = False
-                            child_context = child_context.derive_field_name()
-                            c = None
-                        else:
-                            if len(queue) == 0:
-                                yield ctx.read_data_event(self)
-                            peek = queue.read_byte()
-                            if peek == _COLON:
-                                child_context = child_context.derive_annotation()
-                                c = None  # forces another character to be read safely
-                            else:
-                                # Colon that doesn't indicate a field name or annotation.
-                                _illegal_character(c, child_context)
+            elif has_pending_symbol():
+                # A character besides whitespace, comments, and delimiters has been found, and there is a pending
+                # symbol. That pending symbol is either an annotation, a field name, or a symbol value.
+                if c == _COLON:
+                    if is_field_name:
+                        is_field_name = False
+                        child_context = child_context.derive_field_name()
+                        c = None
                     else:
-                        # It's a symbol value delimited by something other than a comma (i.e. whitespace or comment)
-                        yield symbol_value_event()
-                        child_context = None
-                        delimiter_required = ctx.container.is_delimited
-                    continue
-                if child_context is None or not is_value_decorated():
+                        if len(queue) == 0:
+                            yield ctx.read_data_event(self)
+                        c = queue.read_byte()
+                        if c == _COLON:
+                            child_context = child_context.derive_annotation()
+                            c = None  # forces another character to be read safely
+                        else:
+                            # Colon that doesn't indicate a field name or annotation.
+                            _illegal_character(c, child_context)
+                else:
+                    # It's a symbol value delimited by something other than a comma (i.e. whitespace or comment)
+                    yield symbol_value_event()
+                    child_context = None
+                    delimiter_required = ctx.container.is_delimited
+                continue
+            else:
+                if not is_value_decorated():
                     # This is the start of a new child value.
                     child_context = ctx.derive_child_context(self)
                 if is_field_name:
@@ -1308,8 +1302,7 @@ def _container_handler(c, ctx):
                     # found. In both cases, an event should not be emitted. Read the next character and continue.
                     c, read_next = try_read_byte()
                     break
-                # This is either the same handler, or an immediate transition to a new handler if
-                # the type has been narrowed down. In either case, the next character must be read.
+                # This is an immediate transition to a handler (may be the same one) for the current token.
                 handler = trans.delegate
             if read_next and len(queue) == 0:
                 # This will cause the next loop to fall through to the else branch below to ask for more input.
