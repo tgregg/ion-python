@@ -606,6 +606,12 @@ def comment_handler(c, ctx, whence):
     yield ctx.immediate_transition(whence, trans_cls=_SelfDelimitingTransition)
 
 
+def _composite_transition(event, ctx, next_handler, next_ctx=None):
+    if next_ctx is None:
+        next_ctx = ctx.derive_child_context(ctx.whence)
+    return [event, next_ctx.immediate_transition(next_handler(next_ctx))[0]], next_ctx
+
+
 @coroutine
 def sexp_slash_handler(c, ctx, whence=None, pending_event=None):
     assert c == _SLASH
@@ -619,9 +625,7 @@ def sexp_slash_handler(c, ctx, whence=None, pending_event=None):
         if pending_event is not None:
             # Since this is the start of a new value and not a comment, the pending event must be emitted.
             assert pending_event.event is not None
-            next_ctx = ctx.derive_child_context(ctx.whence)
-            next_immediate = next_ctx.immediate_transition(operator_symbol_handler(_SLASH, next_ctx))
-            yield [pending_event, next_immediate[0]], next_ctx
+            yield _composite_transition(pending_event, ctx, partial(operator_symbol_handler, _SLASH))
         yield ctx.immediate_transition(operator_symbol_handler(_SLASH, ctx))
 
 
@@ -667,13 +671,11 @@ def triple_quote_string_handler(c, ctx, is_field_name=False):
                     else:
                         # This string value is followed by a quoted symbol.
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-                        next_ctx = ctx.derive_child_context(ctx.whence)
                         if quotes == 1:
-                            next_immediate = next_ctx.immediate_transition(quoted_symbol_handler(c, next_ctx, False))
-                            trans = [trans[0], next_immediate[0]], next_ctx
+                            trans = _composite_transition(trans[0], ctx,
+                                                          partial(quoted_symbol_handler, c, is_field_name=False))
                         else:  # quotes == 2
-                            next_ctx = next_ctx.derive_pending_symbol()
-                            trans = trans[0], next_ctx
+                            trans = trans[0], ctx.derive_child_context(ctx.whence).derive_pending_symbol()
                 elif c not in _WHITESPACE:
                     if is_clob:
                         trans = ctx.immediate_transition(clob_end_handler(c, ctx))
@@ -838,9 +840,8 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
             if c in _OPERATORS:
                 yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
             yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
-        next_immediate = next_ctx.immediate_transition(identifier_symbol_handler(c, next_ctx))
-        yield [ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0]] \
-            + [next_immediate[0]], next_ctx
+        yield _composite_transition(ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
+                                    ctx, partial(identifier_symbol_handler, c), next_ctx)
     return inf_or_operator_handler
 
 
@@ -900,10 +901,11 @@ def identifier_symbol_handler(c, ctx, is_field_name=False):
             c_next, _ = yield
             ctx.queue.unread(c_next)
             assert ctx.value
-            next_ctx = ctx.derive_child_context(ctx.whence)
-            next_immediate = next_ctx.immediate_transition(operator_symbol_handler(c, next_ctx))
-            yield [ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0]] \
-                + [next_immediate[0]], next_ctx
+            yield _composite_transition(
+                ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
+                ctx,
+                partial(operator_symbol_handler, c)
+            )
         _illegal_character(c, ctx.derive_ion_type(IonType.SYMBOL))
     val = ctx.value
     val.append(c)
