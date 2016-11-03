@@ -180,6 +180,43 @@ _INCOMPLETE = (
     (b'(-foo', e_start_sexp(), e_symbol(value=b'-')),
 )
 
+_SKIP = (
+    [(e_read(b'123 456 '), e_int(b'123')), (SKIP, TypeError)],  # Can't skip at top-level.
+    [(e_read(b'[]'), e_start_list()), (SKIP, e_end_list()), (NEXT, END)],
+    [(e_read(b'{//\n}'), e_start_struct()), (SKIP, e_end_struct()), (NEXT, END)],
+    [(e_read(b'(/**/)'), e_start_sexp()), (SKIP, e_end_sexp()), (NEXT, END)],
+    [(e_read(b'[a,b,c]'), e_start_list()), (NEXT, e_symbol(b'a')), (SKIP, e_end_list()), (NEXT, END)],
+    [
+        (e_read(b'{c:a,d:e::b}'), e_start_struct()),
+        (NEXT, e_symbol(b'a', field_name=b'c')),
+        (SKIP, e_end_struct()), (NEXT, END)
+    ],
+    [
+        (e_read(b'(([{a:b}]))'), e_start_sexp()),
+        (NEXT, e_start_sexp()),
+        (SKIP, e_end_sexp()),
+        (NEXT, e_end_sexp()), (NEXT, END)],
+    [
+        (e_read(b'['), e_start_list()),
+        (SKIP, INC),
+        (e_read(b'a,42'), INC),
+        (e_read(b',]'), e_end_list()), (NEXT, END)
+    ],
+    [
+        (e_read(b'{'), INC),
+        (e_read(b'foo'), e_start_struct()),
+        (SKIP, INC),
+        (e_read(b':bar,baz:zar}'), e_end_struct()), (NEXT, END)
+    ],
+    [
+        (e_read(b'('), e_start_sexp()),
+        (SKIP, INC),
+        (e_read(b'a+b'), INC),
+        (e_read(b'//\n'), INC),
+        (e_read(b')'), e_end_sexp()), (NEXT, END)
+    ],
+)
+
 
 def _good_sexp(*events):
     return (e_start_sexp(),) + events + (e_end_sexp(),)
@@ -683,11 +720,24 @@ def _containerize_params(param_generator, with_skip=True, is_delegate=False, top
                     mid = add_field_names(param.event_pairs)
                 else:
                     mid = param.event_pairs
-                desc = 'SINGLETON %s - %s' % (ion_type.name, param.desc)
+                desc = 'CONTAINER %s - %s' % (ion_type.name, param.desc)
                 yield _P(
                     desc=desc,
                     event_pairs=start + mid + end,
                 )
+                if with_skip:
+                    @listify
+                    def only_data_inc(event_pairs):
+                        for read_event, ion_event in event_pairs:
+                            if read_event.type is ReadEventType.DATA:
+                                yield read_event, INC
+
+                    start = start[:-1] + [(SKIP, INC)]
+                    mid = only_data_inc(mid)
+                    yield _P(
+                        desc='SKIP %s' % desc,
+                        event_pairs=start + mid + end,
+                    )
         if not is_delegate:
             break
 
@@ -706,17 +756,22 @@ def _expect_event(expected_event, data, events, delimiter):
 def _basic_params(event_func, desc, delimiter, data_event_pairs, is_delegate=False, top_level=True):
     while True:
         yield
-        for data, events in _value_iter(event_func, data_event_pairs, delimiter):
-            event_pairs = []
-            if top_level:
-                event_pairs += [(NEXT, END)]
-            event_pairs += events
-            yield _P(
-                desc='%s %s' % (desc, data),
-                event_pairs=event_pairs
-            )
+        params = zip(*list(_value_iter(event_func, data_event_pairs, delimiter)))[1]
+        for param in _paired_params(params, desc, top_level):
+            yield param
         if not is_delegate:
             break
+
+
+def _paired_params(params, desc, top_level=True):
+    for event_pairs in params:
+        data = event_pairs[0][0].data
+        if top_level:
+            event_pairs = [(NEXT, END)] + event_pairs
+        yield _P(
+            desc='%s %s' % (desc, data),
+            event_pairs=event_pairs
+        )
 
 
 _ion_exception = partial(_expect_event, IonException)
@@ -732,6 +787,7 @@ _good_params = partial(_basic_params, _end, 'GOOD', b'')
     _bad_params(_BAD),
     _incomplete_params(_INCOMPLETE),
     _good_params(_UNSPACED_SEXPS),
+    _paired_params(_SKIP, 'SKIP'),
     _top_level_value_params(),  # all top-level values as individual data events, space-delimited
     _all_top_level_as_one_stream_params(),  # all top-level values as one data event, space-delimited
     _all_top_level_as_one_stream_params(b'/*foo*/'),  # all top-level values as one data event, block comment delimited
@@ -740,7 +796,7 @@ _good_params = partial(_basic_params, _end, 'GOOD', b'')
     _annotate_params(_top_level_value_params(b'//foo\n/*bar*/', is_delegate=True)),  # all annotated top-level values, comments postpended
     _annotate_params(_good_params(_UNSPACED_SEXPS, is_delegate=True)),
     _containerize_params(_scalar_params()),  # all values, each as the only value within a container
-    _containerize_params(_containerize_params(_scalar_params(), is_delegate=True, top_level=False)),
+    _containerize_params(_containerize_params(_scalar_params(), is_delegate=True, top_level=False), with_skip=False),
     _containerize_params(_annotate_params(_scalar_params(), is_delegate=True)),  # all values, each as the only value within a container
     _containerize_params(_all_scalars_in_one_container_params()),  # all values within a single container
     _containerize_params(_annotate_params(_all_scalars_in_one_container_params(), is_delegate=True)),  # annotated containers

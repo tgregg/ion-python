@@ -26,7 +26,7 @@ import six
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
     IonEventType
 from amazon.ion.exceptions import IonException
-from amazon.ion.reader import BufferQueue, reader_trampoline
+from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType
 from amazon.ion.util import record, coroutine, Enum
 
 
@@ -502,6 +502,7 @@ def timestamp_handler(c, ctx):
     if len(ctx.value) != 4:  # or should this be left to the parser?
         _illegal_character(c, ctx, 'Timestamp year is %d digits; expected 4.' % (len(ctx.value),))
     val = ctx.value
+    # TODO put the components into a Timestamp as strings, so the parser doesn't have to retokenize the components.
     val.append(c)
     prev = c
     c, self = yield
@@ -1046,10 +1047,8 @@ def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
     """Creates a co-routine for retrieving data up to a requested size.
 
     Args:
-        length (int): The minimum length requested.
         whence (Coroutine): The co-routine to return to after the data is satisfied.
         ctx (_HandlerContext): The context for the read.
-        skip (Optional[bool]): Whether the requested number of bytes should be skipped.
         stream_event (Optional[IonEvent]): The stream event to return if no bytes are read or
             available.
     """
@@ -1062,8 +1061,6 @@ def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
             data = data_event.data
             data_len = len(data)
             if data_len > 0:
-                # We got something so we can only be incomplete.
-                stream_event = ION_STREAM_INCOMPLETE_EVENT
                 queue.extend(data)
                 yield Transition(None, whence)
         trans = Transition(stream_event, self)
@@ -1317,6 +1314,34 @@ def _container_handler(c, ctx):
                 yield ctx.read_data_event(self, stream_event=stream_event)
 
 
+@coroutine
+def _skip_trampoline(handler):
+    """Intercepts events from container handlers, emitting them only if they should not be skipped."""
+    data_event, self = (yield None)
+    delegate = handler
+    event = None
+    depth = 0
+    while True:
+        def pass_through():
+            _trans = delegate.send(Transition(data_event, delegate))
+            return _trans, _trans.delegate, _trans.event
+
+        if data_event is not None and data_event.type is ReadEventType.SKIP:
+            while True:
+                trans, delegate, event = pass_through()
+                if event is not None:
+                    if event.depth <= depth and event.event_type is IonEventType.CONTAINER_END:
+                        break
+                if event is None or event.event_type is IonEventType.INCOMPLETE:
+                    data_event, _ = yield Transition(event, self)
+        else:
+            trans, delegate, event = pass_through()
+            if event is not None and (event.event_type is IonEventType.CONTAINER_START or
+                                      event.event_type is IonEventType.CONTAINER_END):
+                depth = event.depth
+        data_event, _ = yield Transition(event, self)
+
+
 def reader(queue=None):
     """Returns a raw binary reader co-routine.
 
@@ -1350,4 +1375,4 @@ def reader(queue=None):
         ion_type=None,  # Top level
         pending_symbol=None
     )
-    return reader_trampoline(_container_handler(None, ctx))
+    return reader_trampoline(_skip_trampoline(_container_handler(None, ctx)))
