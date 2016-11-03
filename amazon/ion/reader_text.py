@@ -320,6 +320,15 @@ class _HandlerContext(record(
         )
 
 
+def _composite_transition(event, ctx, next_handler, next_ctx=None):
+    """Composes an event transition followed by an immediate transition to the handler for the next token. This is
+    useful when some lookahead is required to determine if a token has ended, e.g. in the case of long strings.
+    """
+    if next_ctx is None:
+        next_ctx = ctx.derive_child_context(ctx.whence)
+    return [event, next_ctx.immediate_transition(next_handler(next_ctx))[0]], next_ctx
+
+
 class _SelfDelimitingTransition(Transition):
     """Signals that this transition terminates token that is self-delimiting, e.g. quoted string, container, comment."""
 
@@ -546,42 +555,6 @@ def timestamp_handler(c, ctx):
 
 
 @coroutine
-def string_handler(c, ctx, is_field_name=False):
-    # TODO parse unicode escapes (in parser)
-    assert c == _DOUBLE_QUOTE
-    is_clob = ctx.ion_type is IonType.CLOB
-    assert not (is_clob and is_field_name)
-    if not is_clob and not is_field_name:
-        ctx = ctx.derive_ion_type(IonType.STRING)
-    val = ctx.value
-    if is_field_name:
-        assert not val
-        ctx = ctx.derive_pending_symbol()
-        val = ctx.pending_symbol
-    prev = c
-    c, self = yield
-    trans = (Transition(None, self), None)
-    while True:
-        # TODO error on disallowed escape sequences
-        if c == _DOUBLE_QUOTE and prev != _BACKSLASH:
-            break
-        else:
-            # TODO should a backslash be appended?
-            val.append(c)
-        prev = c
-        c, _ = yield trans
-    if is_field_name:
-        c, _ = yield trans  # read past the closing "
-        yield ctx.immediate_transition(ctx.whence)
-    elif not is_clob:
-        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value,
-                                   trans_cls=_SelfDelimitingTransition)
-    else:
-        c, _ = yield trans  # read past the closing "
-        yield ctx.immediate_transition(clob_end_handler(c, ctx))
-
-
-@coroutine
 def comment_handler(c, ctx, whence):
     assert c == _SLASH
     c, self = yield
@@ -606,12 +579,6 @@ def comment_handler(c, ctx, whence):
     yield ctx.immediate_transition(whence, trans_cls=_SelfDelimitingTransition)
 
 
-def _composite_transition(event, ctx, next_handler, next_ctx=None):
-    if next_ctx is None:
-        next_ctx = ctx.derive_child_context(ctx.whence)
-    return [event, next_ctx.immediate_transition(next_handler(next_ctx))[0]], next_ctx
-
-
 @coroutine
 def sexp_slash_handler(c, ctx, whence=None, pending_event=None):
     assert c == _SLASH
@@ -630,7 +597,7 @@ def sexp_slash_handler(c, ctx, whence=None, pending_event=None):
 
 
 @coroutine
-def triple_quote_string_handler(c, ctx, is_field_name=False):
+def long_string_handler(c, ctx, is_field_name=False):
     assert c == _SINGLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
     assert not (is_clob and is_field_name)
@@ -876,27 +843,6 @@ def _symbol_token_end(c, ctx, is_field_name):
 
 
 @coroutine
-def quoted_symbol_handler(c, ctx, is_field_name):
-    assert c != _SINGLE_QUOTE
-    val = ctx.value
-    val.append(c)
-    prev = c
-    c, self = yield
-    trans = (Transition(None, self), None)
-    done = False
-    while not done:
-        # TODO error on disallowed escape sequences
-        if c == _SINGLE_QUOTE and prev != _BACKSLASH:
-            done = True
-        else:
-            # TODO should a backslash be appended?
-            val.append(c)
-        prev = c
-        c, _ = yield trans
-    yield _symbol_token_end(c, ctx, is_field_name)
-
-
-@coroutine
 def identifier_symbol_handler(c, ctx, is_field_name=False):
     in_sexp = ctx.container.ion_type is IonType.SEXP
     if c not in _IDENTIFIER_CHARACTERS:
@@ -927,6 +873,63 @@ def identifier_symbol_handler(c, ctx, is_field_name=False):
     yield _symbol_token_end(c, ctx, is_field_name)
 
 
+def _generate_quoted_text_handler(delimiter, assertion, after, append_first=True,
+                                  before=lambda ctx, is_field_name: (ctx, ctx.value, False),
+                                  on_close=lambda ctx: None):
+    @coroutine
+    def quoted_text_handler(c, ctx, is_field_name=False):
+        assert assertion(c)
+        ctx, val, event_on_close = before(ctx, is_field_name)
+        if append_first:
+            val.append(c)
+        prev = c
+        c, self = yield
+        trans = (Transition(None, self), None)
+        done = False
+        while not done:
+            # TODO error on disallowed escape sequences
+            if c == delimiter and prev != _BACKSLASH:
+                done = True
+                if event_on_close:
+                    trans = on_close(ctx)
+            else:
+                # TODO should a backslash be appended?
+                val.append(c)
+            prev = c
+            c, _ = yield trans
+        yield after(c, ctx, is_field_name)
+    return quoted_text_handler
+
+
+def _generate_short_string_handler():
+    def before(ctx, is_field_name):
+        is_clob = ctx.ion_type is IonType.CLOB
+        assert not (is_clob and is_field_name)
+        is_string = not is_clob and not is_field_name
+        if is_string:
+            ctx = ctx.derive_ion_type(IonType.STRING)
+        val = ctx.value
+        if is_field_name:
+            assert not val
+            ctx = ctx.derive_pending_symbol()
+            val = ctx.pending_symbol
+        return ctx, val, is_string
+
+    def on_close(ctx):
+        return ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value,
+                                             trans_cls=_SelfDelimitingTransition)
+
+    def after(c, ctx, is_field_name):
+        return ctx.immediate_transition(is_field_name and ctx.whence or clob_end_handler(c, ctx))
+
+    return _generate_quoted_text_handler(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, after, append_first=False,
+                                         before=before, on_close=on_close)
+
+
+short_string_handler = _generate_short_string_handler()
+quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: c != _SINGLE_QUOTE, _symbol_token_end)
+
+
 def _generate_single_quote_handler(on_single_quote, on_other):
     @coroutine
     def single_quote_handler(c, ctx, is_field_name=False):
@@ -940,7 +943,7 @@ def _generate_single_quote_handler(on_single_quote, on_other):
 
 
 two_single_quotes_handler = _generate_single_quote_handler(
-    triple_quote_string_handler,
+    long_string_handler,
     lambda c, ctx, is_field_name: ctx.derive_pending_symbol().immediate_transition(ctx.whence)  # Empty symbol.
 )
 string_or_symbol_handler = _generate_single_quote_handler(
@@ -970,13 +973,13 @@ def lob_start_handler(c, ctx):
             ctx = ctx.derive_ion_type(IonType.CLOB)
             if quotes > 0:
                 _illegal_character(c, ctx)
-            yield ctx.immediate_transition(string_handler(c, ctx))
+            yield ctx.immediate_transition(short_string_handler(c, ctx))
         elif c == _SINGLE_QUOTE:
             if not quotes:
                 ctx = ctx.derive_ion_type(IonType.CLOB)
             quotes += 1
             if quotes == 3:
-                yield ctx.immediate_transition(triple_quote_string_handler(c, ctx))
+                yield ctx.immediate_transition(long_string_handler(c, ctx))
         else:
             yield ctx.immediate_transition(blob_end_handler(c, ctx))
         c, _ = yield trans
@@ -1017,7 +1020,7 @@ clob_end_handler = _generate_lob_end_handler(IonType.CLOB, _illegal_character)
 
 
 single_quoted_field_name_handler = partial(string_or_symbol_handler, is_field_name=True)
-double_quoted_field_name_handler = partial(string_handler, is_field_name=True)
+double_quoted_field_name_handler = partial(short_string_handler, is_field_name=True)
 unquoted_field_name_handler = partial(symbol_or_keyword_handler, is_field_name=True)
 
 
@@ -1121,7 +1124,7 @@ _VALUE_START_TABLE = _whitelist(
             _OPEN_PAREN: sexp_handler,
             _OPEN_BRACKET: list_handler,
             _SINGLE_QUOTE: string_or_symbol_handler,
-            _DOUBLE_QUOTE: string_handler,
+            _DOUBLE_QUOTE: short_string_handler,
         },
         (_DIGITS[1:], number_or_timestamp_handler)
     ),
