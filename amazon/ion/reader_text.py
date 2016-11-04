@@ -173,7 +173,14 @@ _NULL_STARTS = {
 class _Container(record(
     'end', 'delimiter', 'ion_type', 'is_delimited'
 )):
-    """TODO"""
+    """A description of an Ion container.
+
+    Args:
+        end (tuple): Singleton containing the container's end character, if any.
+        delimiter (tuple): Singleton containing the container's delimiter character, if any.
+        ion_type (Optional[IonType]): The container's IonType, if any.
+        is_delimited (bool): True if delimiter is not empty; otherwise, False.
+    """
 
 _C_TOP_LEVEL = _Container((), (), None, False)
 _C_STRUCT = _Container((_CLOSE_BRACE,), (_COMMA,), IonType.STRUCT, True)
@@ -184,7 +191,22 @@ _C_SEXP = _Container((_CLOSE_PAREN,), (), IonType.SEXP, False)
 class _HandlerContext(record(
     'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type', 'pending_symbol'
 )):
-    """TODO
+    """A context for a handler co-routine.
+
+    Args:
+        container (_Container): The description of the container in which this context is contained.
+        queue (BufferQueue): The data source for the handler.
+        field_name (Optional[SymbolToken]): The token representing the field name for the handled
+            value.
+        annotations (Optional[Sequence[SymbolToken]]): The sequence of annotations tokens
+            for the value to be parsed.
+        depth (int): the depth of the parser.
+        whence (Coroutine): The reference to the co-routine that this handler should delegate
+            back to when the handler is logically done.
+        value (bytearray): The (in-progress) value of this context's token.
+        ion_type (Optional[IonType]): The IonType of the current token.
+        pending_symbol (Optional[bytearray]): A pending symbol, which may end up being an annotation,
+            field name, or symbol value.
     """
 
     def event_transition(self, event_cls, event_type,
@@ -321,8 +343,9 @@ class _HandlerContext(record(
 
 
 def _composite_transition(event, ctx, next_handler, next_ctx=None):
-    """Composes an event transition followed by an immediate transition to the handler for the next token. This is
-    useful when some lookahead is required to determine if a token has ended, e.g. in the case of long strings.
+    """Composes an event transition followed by an immediate transition to the handler for the next token.
+
+    This is useful when some lookahead is required to determine if a token has ended, e.g. in the case of long strings.
     """
     if next_ctx is None:
         next_ctx = ctx.derive_child_context(ctx.whence)
