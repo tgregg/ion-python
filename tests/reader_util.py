@@ -19,10 +19,12 @@ from __future__ import print_function
 
 from pytest import raises
 
-from tests import is_exception
+from tests import is_exception, listify
 
 from amazon.ion.core import IonEventType
 from amazon.ion.util import record
+from tests.event_aliases import END
+from tests.event_aliases import NEXT
 
 
 def add_depths(events):
@@ -60,3 +62,25 @@ def reader_scaffold(reader, event_pairs):
         else:
             actual = reader.send(read_event)
             assert expected == actual
+
+
+def _value_iter(event_func, values, *args):
+    for seq in values:
+        data = seq[0]
+        event_pairs = list(event_func(data, seq[1:], *args))
+        yield data, event_pairs
+
+
+def _all_top_level_as_one_stream_params(iterator, *args):
+    @listify
+    def generate_event_pairs():
+        yield (NEXT, END)
+        for data, event_pairs in iterator(*args):
+            for event_pair in event_pairs:
+                yield event_pair
+            yield (NEXT, END)
+
+    yield ReaderParameter(
+        desc='TOP LEVEL ALL',
+        event_pairs=generate_event_pairs()
+    )
