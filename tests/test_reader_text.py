@@ -125,7 +125,14 @@ _BAD = (
     (b'(1..)', e_start_sexp()),
     (b'(1.a)', e_start_sexp()),
     (b'(1.23.)', e_start_sexp()),
-    # (b'(42/)', e_start_sexp()), # TODO according to grammar and Java, this should fail. But why must it?
+    (b'(42/)', e_start_sexp()),
+    (b'42/',),
+    (b'0/',),
+    (b'1.2/',),
+    (b'1./',),
+    (b'1.2e3/',),
+    (b'1.2d3/',),
+    (b'2000T/',),
     (b'/ ',),
     (b'/b',),
 )
@@ -148,6 +155,13 @@ _INCOMPLETE = (
     (b'\'\'\'foo\'\'\'/**/',),  # Might be followed by another triple-quoted string.
     (b'\'\'\'\'',),  # Might be followed by another triple-quoted string.
     (b'123',),  # Might have more digits.
+    (b'42/',),  # The / might start a comment
+    (b'0/',),
+    (b'1.2/',),
+    (b'1./',),
+    (b'1.2e3/',),
+    (b'1.2d3/',),
+    (b'2000T/',),
     (b'-',),
     (b'+',),
     (b'1.2',),

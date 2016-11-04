@@ -374,7 +374,10 @@ def number_zero_start_handler(c, ctx):
     ctx.value.append(c)
     c, _ = yield
     if c in _VALUE_TERMINATORS:
-        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+        if c == _SLASH:
+            trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
+        yield trans
     yield ctx.immediate_transition(_ZERO_START_TABLE[c](c, ctx))
 
 
@@ -389,12 +392,25 @@ def number_or_timestamp_handler(c, ctx):
     while True:
         if c in _VALUE_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+            if c == _SLASH:
+                trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
         else:
             if c not in _DIGITS:
                 trans = ctx.immediate_transition(_NUMBER_OR_TIMESTAMP_TABLE[c](c, ctx))
             else:
                 val.append(c)
         c, _ = yield trans
+
+
+@coroutine
+def number_slash_end_handler(c, ctx, event):
+    assert c == _SLASH
+    c, self = yield
+    next_ctx = ctx.derive_child_context(ctx.whence)
+    comment = comment_handler(_SLASH, next_ctx, next_ctx.whence)
+    comment.send((c, comment))
+    # If the previous line returns without error, it's a valid comment and number int may be emitted.
+    yield [event[0], next_ctx.immediate_transition(comment)[0]], next_ctx
 
 
 def _generate_numeric_handler(charset, transition, assertion, illegal_before_underscore,
@@ -415,6 +431,8 @@ def _generate_numeric_handler(charset, transition, assertion, illegal_before_und
                 if prev == _UNDERSCORE or prev in illegal_at_end:
                     _illegal_character(c, ctx, '%s at end of number.' % (_c(prev),))
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                if c == _SLASH:
+                    trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
             else:
                 if c == _UNDERSCORE:
                     if prev == _UNDERSCORE or prev in illegal_before_underscore:
@@ -539,6 +557,8 @@ def timestamp_handler(c, ctx):
             _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_c(x) for x in nxt], state))
         if c in _VALUE_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+            if c == _SLASH:
+                trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
         else:
             if c == _Z:
                 nxt = _VALUE_TERMINATORS
@@ -941,7 +961,7 @@ def _generate_short_string_handler():
 
     def on_close(ctx):
         return ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value,
-                                             trans_cls=_SelfDelimitingTransition)
+                                    trans_cls=_SelfDelimitingTransition)
 
     def after(c, ctx, is_field_name):
         return ctx.immediate_transition(is_field_name and ctx.whence or clob_end_handler(c, ctx))
