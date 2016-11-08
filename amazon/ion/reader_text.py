@@ -79,7 +79,9 @@ _FLOAT_EXPS = _seq('Ee')
 _TIMESTAMP_YEAR_DELIMITERS = _seq('-T')
 _TIMESTAMP_DELIMITERS = _seq('-:+.')
 _TIMESTAMP_OFFSET_INDICATORS = _seq('Z+-')
-_IDENTIFIER_STARTS = _seq(string.ascii_letters) + (_seq('$_'))
+_LETTERS = _seq(string.ascii_letters)
+_BASE64_DIGITS = _LETTERS + _DIGITS + _seq('+/')
+_IDENTIFIER_STARTS = _LETTERS + _seq('$_')
 _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
 _OPERATORS = _seq('!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no, java: no, grammar: yes
 
@@ -108,6 +110,7 @@ _OPEN_PAREN = _o('(')
 _CLOSE_BRACE = _o('}')
 _CLOSE_BRACKET = _o(']')
 _CLOSE_PAREN = _o(')')
+_BASE64_PAD = _o('=')
 
 _TRUE_SEQUENCE = _seq('rue')
 _FALSE_SEQUENCE = _seq('alse')
@@ -1029,38 +1032,65 @@ def lob_start_handler(c, ctx):
         c, _ = yield trans
 
 
-def _generate_lob_end_handler(ion_type, action):
+def _generate_lob_end_handler(ion_type, action, validate=lambda c, ctx, action_res: None):
     assert ion_type is IonType.BLOB or ion_type is IonType.CLOB
 
     @coroutine
     def lob_end_handler(c, ctx):
         val = ctx.value
-        if c != _CLOSE_BRACE and c not in _WHITESPACE:
-            action(c, ctx)
         prev = c
+        action_res = None
+        if c != _CLOSE_BRACE and c not in _WHITESPACE:
+            action_res = action(c, ctx, prev, action_res)
         c, self = yield
         trans = (Transition(None, self), None)
-        done = False
-        while not done:
+        while True:
             if c in _WHITESPACE:
                 if prev == _CLOSE_BRACE:
-                    _illegal_character(c, ctx.derive_ion_type(IonType.BLOB), 'Expected }.')
+                    _illegal_character(c, ctx.derive_ion_type(ion_type), 'Expected }.')
             elif c == _CLOSE_BRACE:
                 if prev == _CLOSE_BRACE:
-                    done = True
+                    validate(c, ctx, action_res)
+                    break
             else:
-                action(c, ctx)
+                action_res = action(c, ctx, prev, action_res)
             prev = c
             c, _ = yield trans
-        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, val)
+        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, val, trans_cls=_SelfDelimitingTransition)
     return lob_end_handler
 
 
-# Note: all validation of base 64 characters will be left to the base64 library in the parsing phase. It could
-# be partly done here in the lexer by checking each character against the base64 alphabet and making sure the blob
-# ends with the correct number of '=', but this is simpler.
-blob_end_handler = _generate_lob_end_handler(IonType.BLOB, lambda c, ctx: ctx.value.append(c))
-clob_end_handler = _generate_lob_end_handler(IonType.CLOB, _illegal_character)
+def _generate_blob_end_handler():
+    def expand_res(res):
+        if res is None:
+            return 0, 0
+        return res
+
+    def action(c, ctx, prev, res):
+        num_digits, num_pads = expand_res(res)
+        if c in _BASE64_DIGITS:
+            if prev == _CLOSE_BRACE or prev == _BASE64_PAD:
+                _illegal_character(c, ctx.derive_ion_type(IonType.BLOB))
+            num_digits += 1
+        elif c == _BASE64_PAD:
+            if prev == _CLOSE_BRACE:
+                _illegal_character(c, ctx.derive_ion_type(IonType.BLOB))
+            num_pads += 1
+        else:
+            _illegal_character(c, ctx.derive_ion_type(IonType.BLOB))
+        ctx.value.append(c)
+        return num_digits, num_pads
+
+    def validate(c, ctx, res):
+        num_digits, num_pads = expand_res(res)
+        if num_pads > 3 or (num_digits + num_pads) % 4 != 0:
+            _illegal_character(c, ctx, 'Incorrect number of pad characters (%d) for a blob of %d base-64 digits.'
+                               % (num_pads, num_digits))
+
+    return _generate_lob_end_handler(IonType.BLOB, action, validate)
+
+blob_end_handler = _generate_blob_end_handler()
+clob_end_handler = _generate_lob_end_handler(IonType.CLOB, lambda c, ctx, prev, action_res: _illegal_character(c, ctx))
 
 
 single_quoted_field_name_handler = partial(string_or_symbol_handler, is_field_name=True)
