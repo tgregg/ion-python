@@ -24,7 +24,7 @@ from random import Random
 from six import int2byte
 
 from tests import parametrize, listify
-from tests.reader_util import reader_scaffold, ReaderParameter, _all_top_level_as_one_stream_params, _value_iter
+from tests.reader_util import reader_scaffold, ReaderParameter, all_top_level_as_one_stream_params, value_iter
 from tests.event_aliases import *
 
 from amazon.ion.core import IonType, timestamp, TimestampPrecision, OffsetTZInfo
@@ -216,7 +216,7 @@ def _top_level_event_pairs(data, events):
             first = False
         yield input_event, event
 
-_top_level_iter = partial(_value_iter, _top_level_event_pairs, _TOP_LEVEL_VALUES)
+_top_level_iter = partial(value_iter, _top_level_event_pairs, _TOP_LEVEL_VALUES)
 
 
 def _gen_type_len(tid, length):
@@ -360,7 +360,7 @@ def _containerize_params(params, with_skip=True):
             _containerize_params(_top_level_value_params(), with_skip=False)
         )
     ),
-    _prepend_ivm(_all_top_level_as_one_stream_params(_top_level_iter)),
+    _prepend_ivm(all_top_level_as_one_stream_params(_top_level_iter)),
 ))
 def test_raw_reader(p):
     reader_scaffold(raw_reader(), p.event_pairs)

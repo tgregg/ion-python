@@ -25,7 +25,7 @@ from amazon.ion.reader_text import reader
 from amazon.ion.util import coroutine
 from tests import listify, parametrize
 from tests.event_aliases import *
-from tests.reader_util import ReaderParameter, reader_scaffold, _all_top_level_as_one_stream_params, _value_iter
+from tests.reader_util import ReaderParameter, reader_scaffold, all_top_level_as_one_stream_params, value_iter
 
 _b = bytearray
 _P = ReaderParameter
@@ -487,7 +487,7 @@ def _scalar_event_pairs(data, events, delimiter):
         yield input_event, event
 
 
-_scalar_iter = partial(_value_iter, _scalar_event_pairs, _GOOD_SCALARS)
+_scalar_iter = partial(value_iter, _scalar_event_pairs, _GOOD_SCALARS)
 
 
 @coroutine
@@ -749,7 +749,7 @@ def _expect_event(expected_event, data, events, delimiter):
 def _basic_params(event_func, desc, delimiter, data_event_pairs, is_delegate=False, top_level=True):
     while True:
         yield
-        params = zip(*list(_value_iter(event_func, data_event_pairs, delimiter)))[1]
+        params = zip(*list(value_iter(event_func, data_event_pairs, delimiter)))[1]
         for param in _paired_params(params, desc, top_level):
             yield param
         if not is_delegate:
@@ -782,9 +782,9 @@ _good_params = partial(_basic_params, _end, 'GOOD', b'')
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),
     _top_level_value_params(),  # all top-level values as individual data events, space-delimited
-    _all_top_level_as_one_stream_params(_scalar_iter, b' '),  # all top-level values as one data event, space-delimited
-    _all_top_level_as_one_stream_params(_scalar_iter, b'/*foo*/'),  # all top-level values as one data event, block comment delimited
-    _all_top_level_as_one_stream_params(_scalar_iter, b'//foo\n'),  # all top-level values as one data event, line comment delimited
+    all_top_level_as_one_stream_params(_scalar_iter, b' '),  # all top-level values as one data event, space-delimited
+    all_top_level_as_one_stream_params(_scalar_iter, b'/*foo*/'),  # all top-level values as one data event, block comment delimited
+    all_top_level_as_one_stream_params(_scalar_iter, b'//foo\n'),  # all top-level values as one data event, line comment delimited
     _annotate_params(_top_level_value_params(is_delegate=True)),  # all annotated top-level values, spaces postpended
     _annotate_params(_top_level_value_params(b'//foo\n/*bar*/', is_delegate=True)),  # all annotated top-level values, comments postpended
     _annotate_params(_good_params(_UNSPACED_SEXPS, is_delegate=True)),

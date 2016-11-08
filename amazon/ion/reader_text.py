@@ -118,7 +118,7 @@ _NAN_SEQUENCE = _seq('an')
 _INF_SEQUENCE = _seq('inf')
 
 
-class NullSequence:
+class _NullSequence:
     def __init__(self, ion_type, sequence):
         self.ion_type = ion_type
         self.sequence = sequence
@@ -126,19 +126,19 @@ class NullSequence:
     def __getitem__(self, item):
         return self.sequence[item]
 
-_NULL_SEQUENCE = NullSequence(IonType.NULL, _seq('ull'))
-_NULL_SYMBOL_SEQUENCE = NullSequence(IonType.SYMBOL, _seq('mbol'))
-_NULL_SEXP_SEQUENCE = NullSequence(IonType.SEXP, _seq('xp'))
-_NULL_STRING_SEQUENCE = NullSequence(IonType.STRING, _seq('ng'))
-_NULL_STRUCT_SEQUENCE = NullSequence(IonType.STRUCT, _seq('ct'))
-_NULL_INT_SEQUENCE = NullSequence(IonType.INT, _seq('nt'))
-_NULL_FLOAT_SEQUENCE = NullSequence(IonType.FLOAT, _seq('loat'))
-_NULL_DECIMAL_SEQUENCE = NullSequence(IonType.DECIMAL, _seq('ecimal'))
-_NULL_CLOB_SEQUENCE = NullSequence(IonType.CLOB, _seq('lob'))
-_NULL_LIST_SEQUENCE = NullSequence(IonType.LIST, _seq('ist'))
-_NULL_BLOB_SEQUENCE = NullSequence(IonType.BLOB, _seq('ob'))
-_NULL_BOOL_SEQUENCE = NullSequence(IonType.BOOL, _seq('ol'))
-_NULL_TIMESTAMP_SEQUENCE = NullSequence(IonType.TIMESTAMP, _seq('imestamp'))
+_NULL_SEQUENCE = _NullSequence(IonType.NULL, _seq('ull'))
+_NULL_SYMBOL_SEQUENCE = _NullSequence(IonType.SYMBOL, _seq('mbol'))
+_NULL_SEXP_SEQUENCE = _NullSequence(IonType.SEXP, _seq('xp'))
+_NULL_STRING_SEQUENCE = _NullSequence(IonType.STRING, _seq('ng'))
+_NULL_STRUCT_SEQUENCE = _NullSequence(IonType.STRUCT, _seq('ct'))
+_NULL_INT_SEQUENCE = _NullSequence(IonType.INT, _seq('nt'))
+_NULL_FLOAT_SEQUENCE = _NullSequence(IonType.FLOAT, _seq('loat'))
+_NULL_DECIMAL_SEQUENCE = _NullSequence(IonType.DECIMAL, _seq('ecimal'))
+_NULL_CLOB_SEQUENCE = _NullSequence(IonType.CLOB, _seq('lob'))
+_NULL_LIST_SEQUENCE = _NullSequence(IonType.LIST, _seq('ist'))
+_NULL_BLOB_SEQUENCE = _NullSequence(IonType.BLOB, _seq('ob'))
+_NULL_BOOL_SEQUENCE = _NullSequence(IonType.BOOL, _seq('ol'))
+_NULL_TIMESTAMP_SEQUENCE = _NullSequence(IonType.TIMESTAMP, _seq('imestamp'))
 
 _NULL_STR_NEXT = {
     _o('i'): _NULL_STRING_SEQUENCE,
@@ -360,7 +360,7 @@ class _SelfDelimitingTransition(Transition):
 
 
 @coroutine
-def number_negative_start_handler(c, ctx):
+def _number_negative_start_handler(c, ctx):
     assert c == _MINUS
     assert len(ctx.value) == 0
     ctx = ctx.derive_ion_type(IonType.INT)
@@ -370,7 +370,7 @@ def number_negative_start_handler(c, ctx):
 
 
 @coroutine
-def number_zero_start_handler(c, ctx):
+def _number_zero_start_handler(c, ctx):
     assert c == _ZERO
     assert len(ctx.value) == 0 or (len(ctx.value) == 1 and ctx.value[0] == _MINUS)
     ctx = ctx.derive_ion_type(IonType.INT)
@@ -379,13 +379,13 @@ def number_zero_start_handler(c, ctx):
     if c in _VALUE_TERMINATORS:
         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         if c == _SLASH:
-            trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
+            trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         yield trans
     yield ctx.immediate_transition(_ZERO_START_TABLE[c](c, ctx))
 
 
 @coroutine
-def number_or_timestamp_handler(c, ctx):
+def _number_or_timestamp_handler(c, ctx):
     assert c in _DIGITS
     ctx = ctx.derive_ion_type(IonType.INT)  # If this is the last digit read, this value is an Int.
     val = ctx.value
@@ -396,7 +396,7 @@ def number_or_timestamp_handler(c, ctx):
         if c in _VALUE_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
             if c == _SLASH:
-                trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
+                trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         else:
             if c not in _DIGITS:
                 trans = ctx.immediate_transition(_NUMBER_OR_TIMESTAMP_TABLE[c](c, ctx))
@@ -406,11 +406,11 @@ def number_or_timestamp_handler(c, ctx):
 
 
 @coroutine
-def number_slash_end_handler(c, ctx, event):
+def _number_slash_end_handler(c, ctx, event):
     assert c == _SLASH
     c, self = yield
     next_ctx = ctx.derive_child_context(ctx.whence)
-    comment = comment_handler(_SLASH, next_ctx, next_ctx.whence)
+    comment = _comment_handler(_SLASH, next_ctx, next_ctx.whence)
     comment.send((c, comment))
     # If the previous line returns without error, it's a valid comment and number int may be emitted.
     yield [event[0], next_ctx.immediate_transition(comment)[0]], next_ctx
@@ -435,7 +435,7 @@ def _generate_numeric_handler(charset, transition, assertion, illegal_before_und
                     _illegal_character(c, ctx, '%s at end of number.' % (_c(prev),))
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                 if c == _SLASH:
-                    trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
+                    trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
             else:
                 if c == _UNDERSCORE:
                     if prev == _UNDERSCORE or prev in illegal_before_underscore:
@@ -481,14 +481,14 @@ def _generate_radix_int_handler(radix_indicators, charset):
                                      assertion, radix_indicators, illegal_at_end=radix_indicators)
 
 
-decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
-float_handler = _generate_exponent_handler(IonType.FLOAT, _FLOAT_EXPS)
+_decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
+_float_handler = _generate_exponent_handler(IonType.FLOAT, _FLOAT_EXPS)
 
 
 _FRACTIONAL_NUMBER_TABLE = _whitelist(
     _merge_dicts(
-        (_DECIMAL_EXPS, decimal_handler),
-        (_FLOAT_EXPS, float_handler)
+        (_DECIMAL_EXPS, _decimal_handler),
+        (_FLOAT_EXPS, _float_handler)
     )
 )
 
@@ -504,13 +504,13 @@ _WHOLE_NUMBER_TABLE = _whitelist(
     )
 )
 
-whole_number_handler = _generate_coefficient_handler(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
-binary_int_handler = _generate_radix_int_handler(_BINARY_RADIX, _BINARY_DIGITS)
-hex_int_handler = _generate_radix_int_handler(_HEX_RADIX, _HEX_DIGITS)
+_whole_number_handler = _generate_coefficient_handler(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
+_binary_int_handler = _generate_radix_int_handler(_BINARY_RADIX, _BINARY_DIGITS)
+_hex_int_handler = _generate_radix_int_handler(_HEX_RADIX, _HEX_DIGITS)
 
 
 @coroutine
-def timestamp_zero_start_handler(c, ctx):
+def _timestamp_zero_start_handler(c, ctx):
     val = ctx.value
     ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
     if val[0] == _MINUS:
@@ -520,7 +520,7 @@ def timestamp_zero_start_handler(c, ctx):
     trans = (Transition(None, self), None)
     while True:
         if c in _TIMESTAMP_YEAR_DELIMITERS:
-            trans = ctx.immediate_transition(timestamp_handler(c, ctx))
+            trans = ctx.immediate_transition(_timestamp_handler(c, ctx))
         elif c in _DIGITS:
             val.append(c)
         else:
@@ -529,7 +529,7 @@ def timestamp_zero_start_handler(c, ctx):
 
 
 @coroutine
-def timestamp_handler(c, ctx):
+def _timestamp_handler(c, ctx):
     class State(Enum):
         YEAR = 0
         MONTH = 1
@@ -561,7 +561,7 @@ def timestamp_handler(c, ctx):
         if c in _VALUE_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
             if c == _SLASH:
-                trans = ctx.immediate_transition(number_slash_end_handler(c, ctx, trans))
+                trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         else:
             if c == _Z:
                 nxt = _VALUE_TERMINATORS
@@ -602,7 +602,7 @@ def timestamp_handler(c, ctx):
 
 
 @coroutine
-def comment_handler(c, ctx, whence):
+def _comment_handler(c, ctx, whence):
     assert c == _SLASH
     c, self = yield
     if c == _SLASH:
@@ -627,24 +627,24 @@ def comment_handler(c, ctx, whence):
 
 
 @coroutine
-def sexp_slash_handler(c, ctx, whence=None, pending_event=None):
+def _sexp_slash_handler(c, ctx, whence=None, pending_event=None):
     assert c == _SLASH
     if whence is None:
         whence = ctx.whence
     c, self = yield
     ctx.queue.unread(c)
     if c == _ASTERISK or c == _SLASH:
-        yield ctx.immediate_transition(comment_handler(_SLASH, ctx, whence))
+        yield ctx.immediate_transition(_comment_handler(_SLASH, ctx, whence))
     else:
         if pending_event is not None:
             # Since this is the start of a new value and not a comment, the pending event must be emitted.
             assert pending_event.event is not None
-            yield _composite_transition(pending_event, ctx, partial(operator_symbol_handler, _SLASH))
-        yield ctx.immediate_transition(operator_symbol_handler(_SLASH, ctx))
+            yield _composite_transition(pending_event, ctx, partial(_operator_symbol_handler, _SLASH))
+        yield ctx.immediate_transition(_operator_symbol_handler(_SLASH, ctx))
 
 
 @coroutine
-def long_string_handler(c, ctx, is_field_name=False):
+def _long_string_handler(c, ctx, is_field_name=False):
     assert c == _SINGLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
     assert not (is_clob and is_field_name)
@@ -690,18 +690,18 @@ def long_string_handler(c, ctx, is_field_name=False):
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
                         if quotes == 1:
                             trans = _composite_transition(trans[0], ctx,
-                                                          partial(quoted_symbol_handler, c, is_field_name=False))
+                                                          partial(_quoted_symbol_handler, c, is_field_name=False))
                         else:  # quotes == 2
                             trans = trans[0], ctx.derive_child_context(ctx.whence).derive_pending_symbol()
                 elif c not in _WHITESPACE:
                     if is_clob:
-                        trans = ctx.immediate_transition(clob_end_handler(c, ctx))
+                        trans = ctx.immediate_transition(_clob_end_handler(c, ctx))
                     elif c == _SLASH:
                         if ctx.container.ion_type is IonType.SEXP:
                             pending = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)[0]
-                            trans = ctx.immediate_transition(sexp_slash_handler(c, ctx, self, pending))
+                            trans = ctx.immediate_transition(_sexp_slash_handler(c, ctx, self, pending))
                         else:
-                            trans = ctx.immediate_transition(comment_handler(c, ctx, self))
+                            trans = ctx.immediate_transition(_comment_handler(c, ctx, self))
                     elif is_field_name:
                         trans = ctx.immediate_transition(ctx.whence)
                     else:
@@ -711,7 +711,7 @@ def long_string_handler(c, ctx, is_field_name=False):
 
 
 @coroutine
-def typed_null_handler(c, ctx):
+def _typed_null_handler(c, ctx):
     assert c == _DOT
     c, self = yield
     nxt = _NULL_STARTS
@@ -729,7 +729,7 @@ def typed_null_handler(c, ctx):
             if c not in nxt:
                 _illegal_character(c, ctx, 'Illegal null type.')
             nxt = nxt[c]
-            if isinstance(nxt, NullSequence):
+            if isinstance(nxt, _NullSequence):
                 length = len(nxt.sequence)
         else:
             if c != nxt[i]:
@@ -740,13 +740,13 @@ def typed_null_handler(c, ctx):
 
 
 @coroutine
-def symbol_or_keyword_handler(c, ctx, is_field_name=False):
+def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
     in_sexp = ctx.container.ion_type is IonType.SEXP
     if c not in _IDENTIFIER_STARTS:
         if in_sexp and c in _OPERATORS:
             c_next, _ = yield
             ctx.queue.unread(c_next)
-            yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
+            yield ctx.immediate_transition(_operator_symbol_handler(c, ctx))
         _illegal_character(c, ctx)
     val = ctx.value
     val.append(c)
@@ -789,7 +789,7 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 if found:
                     if is_field_name:
                         _illegal_character(c, ctx, "Illegal character in field name.")
-                    transition = ctx.immediate_transition(typed_null_handler(c, ctx))
+                    transition = ctx.immediate_transition(_typed_null_handler(c, ctx))
                 return found, transition
             maybe_null, keyword_trans = check_keyword('null', _NULL_SEQUENCE.sequence, IonType.NULL, None, check_null_dot)
         if maybe_nan:
@@ -812,7 +812,7 @@ def symbol_or_keyword_handler(c, ctx, is_field_name=False):
             elif c in _VALUE_TERMINATORS or (in_sexp and c in _OPERATORS):
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val)
             else:
-                trans = ctx.immediate_transition(identifier_symbol_handler(c, ctx, is_field_name=is_field_name))
+                trans = ctx.immediate_transition(_identifier_symbol_handler(c, ctx, is_field_name=is_field_name))
         c, _ = yield trans
 
 
@@ -855,19 +855,19 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
             _illegal_character(c, next_ctx is None and ctx or next_ctx)
         if match_index == 0:
             if c in _OPERATORS:
-                yield ctx.immediate_transition(operator_symbol_handler(c, ctx))
+                yield ctx.immediate_transition(_operator_symbol_handler(c, ctx))
             yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
         yield _composite_transition(ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
-                                    ctx, partial(identifier_symbol_handler, c), next_ctx)
+                                    ctx, partial(_identifier_symbol_handler, c), next_ctx)
     return inf_or_operator_handler
 
 
-negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(_c(_MINUS))
-positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(_c(_PLUS), is_delegate=False)
+_negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(_c(_MINUS))
+_positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(_c(_PLUS), is_delegate=False)
 
 
 @coroutine
-def operator_symbol_handler(c, ctx):
+def _operator_symbol_handler(c, ctx):
     assert c in _OPERATORS
     val = ctx.value
     val.append(c)
@@ -890,7 +890,7 @@ def _symbol_token_end(c, ctx, is_field_name):
 
 
 @coroutine
-def identifier_symbol_handler(c, ctx, is_field_name=False):
+def _identifier_symbol_handler(c, ctx, is_field_name=False):
     in_sexp = ctx.container.ion_type is IonType.SEXP
     if c not in _IDENTIFIER_CHARACTERS:
         if in_sexp and c in _OPERATORS:
@@ -900,7 +900,7 @@ def identifier_symbol_handler(c, ctx, is_field_name=False):
             yield _composite_transition(
                 ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
                 ctx,
-                partial(operator_symbol_handler, c)
+                partial(_operator_symbol_handler, c)
             )
         _illegal_character(c, ctx.derive_ion_type(IonType.SYMBOL))
     val = ctx.value
@@ -967,14 +967,14 @@ def _generate_short_string_handler():
                                     trans_cls=_SelfDelimitingTransition)
 
     def after(c, ctx, is_field_name):
-        return ctx.immediate_transition(is_field_name and ctx.whence or clob_end_handler(c, ctx))
+        return ctx.immediate_transition(is_field_name and ctx.whence or _clob_end_handler(c, ctx))
 
     return _generate_quoted_text_handler(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, after, append_first=False,
                                          before=before, on_close=on_close)
 
 
-short_string_handler = _generate_short_string_handler()
-quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: c != _SINGLE_QUOTE, _symbol_token_end)
+_short_string_handler = _generate_short_string_handler()
+_quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: c != _SINGLE_QUOTE, _symbol_token_end)
 
 
 def _generate_single_quote_handler(on_single_quote, on_other):
@@ -989,25 +989,25 @@ def _generate_single_quote_handler(on_single_quote, on_other):
     return single_quote_handler
 
 
-two_single_quotes_handler = _generate_single_quote_handler(
-    long_string_handler,
+_two_single_quotes_handler = _generate_single_quote_handler(
+    _long_string_handler,
     lambda c, ctx, is_field_name: ctx.derive_pending_symbol().immediate_transition(ctx.whence)  # Empty symbol.
 )
-string_or_symbol_handler = _generate_single_quote_handler(
-    two_single_quotes_handler,
-    lambda c, ctx, is_field_name: ctx.immediate_transition(quoted_symbol_handler(c, ctx, is_field_name))
+_string_or_symbol_handler = _generate_single_quote_handler(
+    _two_single_quotes_handler,
+    lambda c, ctx, is_field_name: ctx.immediate_transition(_quoted_symbol_handler(c, ctx, is_field_name))
 )
 
 
 @coroutine
-def struct_or_lob_handler(c, ctx):
+def _struct_or_lob_handler(c, ctx):
     assert c == _OPEN_BRACE
     c, self = yield
     yield ctx.immediate_transition(_STRUCT_OR_LOB_TABLE[c](c, ctx))
 
 
 @coroutine
-def lob_start_handler(c, ctx):
+def _lob_start_handler(c, ctx):
     assert c == _OPEN_BRACE
     c, self = yield
     trans = (Transition(None, self), None)
@@ -1020,15 +1020,15 @@ def lob_start_handler(c, ctx):
             ctx = ctx.derive_ion_type(IonType.CLOB)
             if quotes > 0:
                 _illegal_character(c, ctx)
-            yield ctx.immediate_transition(short_string_handler(c, ctx))
+            yield ctx.immediate_transition(_short_string_handler(c, ctx))
         elif c == _SINGLE_QUOTE:
             if not quotes:
                 ctx = ctx.derive_ion_type(IonType.CLOB)
             quotes += 1
             if quotes == 3:
-                yield ctx.immediate_transition(long_string_handler(c, ctx))
+                yield ctx.immediate_transition(_long_string_handler(c, ctx))
         else:
-            yield ctx.immediate_transition(blob_end_handler(c, ctx))
+            yield ctx.immediate_transition(_blob_end_handler(c, ctx))
         c, _ = yield trans
 
 
@@ -1089,13 +1089,13 @@ def _generate_blob_end_handler():
 
     return _generate_lob_end_handler(IonType.BLOB, action, validate)
 
-blob_end_handler = _generate_blob_end_handler()
-clob_end_handler = _generate_lob_end_handler(IonType.CLOB, lambda c, ctx, prev, action_res: _illegal_character(c, ctx))
+_blob_end_handler = _generate_blob_end_handler()
+_clob_end_handler = _generate_lob_end_handler(IonType.CLOB, lambda c, ctx, prev, action_res: _illegal_character(c, ctx))
 
 
-single_quoted_field_name_handler = partial(string_or_symbol_handler, is_field_name=True)
-double_quoted_field_name_handler = partial(short_string_handler, is_field_name=True)
-unquoted_field_name_handler = partial(symbol_or_keyword_handler, is_field_name=True)
+_single_quoted_field_name_handler = partial(_string_or_symbol_handler, is_field_name=True)
+_double_quoted_field_name_handler = partial(_short_string_handler, is_field_name=True)
+_unquoted_field_name_handler = partial(_symbol_or_keyword_handler, is_field_name=True)
 
 
 def _generate_container_start_handler(ion_type, before_yield=lambda c, ctx: None):
@@ -1110,9 +1110,9 @@ def _generate_container_start_handler(ion_type, before_yield=lambda c, ctx: None
 
 
 # Struct requires unread_byte because we had to read one char past the { to make sure it wasn't a lob.
-struct_handler = _generate_container_start_handler(IonType.STRUCT, lambda c, ctx: ctx.queue.unread(c))
-list_handler = _generate_container_start_handler(IonType.LIST)
-sexp_handler = _generate_container_start_handler(IonType.SEXP)
+_struct_handler = _generate_container_start_handler(IonType.STRUCT, lambda c, ctx: ctx.queue.unread(c))
+_list_handler = _generate_container_start_handler(IonType.LIST)
+_sexp_handler = _generate_container_start_handler(IonType.SEXP)
 
 
 @coroutine
@@ -1142,44 +1142,44 @@ def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
 _ZERO_START_TABLE = _whitelist(
     _merge_dicts(
         _WHOLE_NUMBER_TABLE,
-        (_DIGITS, timestamp_zero_start_handler),
-        (_BINARY_RADIX, binary_int_handler),
-        (_HEX_RADIX, hex_int_handler)
+        (_DIGITS, _timestamp_zero_start_handler),
+        (_BINARY_RADIX, _binary_int_handler),
+        (_HEX_RADIX, _hex_int_handler)
     )
 )
 
 _NUMBER_OR_TIMESTAMP_TABLE = _whitelist(
     _merge_dicts(
         {
-            _UNDERSCORE: whole_number_handler,
+            _UNDERSCORE: _whole_number_handler,
         },
         _WHOLE_NUMBER_TABLE,
-        (_TIMESTAMP_YEAR_DELIMITERS, timestamp_handler)
+        (_TIMESTAMP_YEAR_DELIMITERS, _timestamp_handler)
     )
 )
 
 _NEGATIVE_TABLE = _whitelist(
     _merge_dicts(
         {
-            _ZERO: number_zero_start_handler,
+            _ZERO: _number_zero_start_handler,
         },
-        (_DIGITS[1:], whole_number_handler)
+        (_DIGITS[1:], _whole_number_handler)
     ),
-    fallback=negative_inf_or_sexp_hyphen_handler
+    fallback=_negative_inf_or_sexp_hyphen_handler
 )
 
 _STRUCT_OR_LOB_TABLE = _whitelist({
-    _OPEN_BRACE: lob_start_handler
-}, struct_handler)
+    _OPEN_BRACE: _lob_start_handler
+}, _struct_handler)
 
 
 _FIELD_NAME_START_TABLE = _whitelist(
     _merge_dicts(
         {
-            _SINGLE_QUOTE: single_quoted_field_name_handler,
-            _DOUBLE_QUOTE: double_quoted_field_name_handler,
+            _SINGLE_QUOTE: _single_quoted_field_name_handler,
+            _DOUBLE_QUOTE: _double_quoted_field_name_handler,
         },
-        (_IDENTIFIER_STARTS, unquoted_field_name_handler)
+        (_IDENTIFIER_STARTS, _unquoted_field_name_handler)
     ),
     fallback=partial(_illegal_character, message='Illegal character in field name.')
 )
@@ -1187,18 +1187,18 @@ _FIELD_NAME_START_TABLE = _whitelist(
 _VALUE_START_TABLE = _whitelist(
     _merge_dicts(
         {
-            _MINUS: number_negative_start_handler,
-            _PLUS: positive_inf_or_sexp_plus_handler,
-            _ZERO: number_zero_start_handler,
-            _OPEN_BRACE: struct_or_lob_handler,
-            _OPEN_PAREN: sexp_handler,
-            _OPEN_BRACKET: list_handler,
-            _SINGLE_QUOTE: string_or_symbol_handler,
-            _DOUBLE_QUOTE: short_string_handler,
+            _MINUS: _number_negative_start_handler,
+            _PLUS: _positive_inf_or_sexp_plus_handler,
+            _ZERO: _number_zero_start_handler,
+            _OPEN_BRACE: _struct_or_lob_handler,
+            _OPEN_PAREN: _sexp_handler,
+            _OPEN_BRACKET: _list_handler,
+            _SINGLE_QUOTE: _string_or_symbol_handler,
+            _DOUBLE_QUOTE: _short_string_handler,
         },
-        (_DIGITS[1:], number_or_timestamp_handler)
+        (_DIGITS[1:], _number_or_timestamp_handler)
     ),
-    fallback=symbol_or_keyword_handler
+    fallback=_symbol_or_keyword_handler
 )
 
 
@@ -1271,9 +1271,9 @@ def _container_handler(c, ctx):
                     # comment ends).
                     child_context = ctx.derive_child_context(self)
                 if ctx.ion_type is IonType.SEXP:
-                    handler = sexp_slash_handler(c, child_context, pending_event=pending_symbol_value())
+                    handler = _sexp_slash_handler(c, child_context, pending_event=pending_symbol_value())
                 else:
-                    handler = comment_handler(c, child_context, self)
+                    handler = _comment_handler(c, child_context, self)
             elif delimiter_required:
                 # This is not the delimiter, or whitespace, or the start of a comment. Throw.
                 _illegal_character(c, ctx.derive_child_context(None), 'Delimiter %s not found after value.'

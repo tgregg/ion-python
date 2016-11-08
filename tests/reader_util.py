@@ -64,14 +64,14 @@ def reader_scaffold(reader, event_pairs):
             assert expected == actual
 
 
-def _value_iter(event_func, values, *args):
+def value_iter(event_func, values, *args):
     for seq in values:
         data = seq[0]
         event_pairs = list(event_func(data, seq[1:], *args))
         yield data, event_pairs
 
 
-def _all_top_level_as_one_stream_params(iterator, *args):
+def all_top_level_as_one_stream_params(iterator, *args):
     @listify
     def generate_event_pairs():
         yield (NEXT, END)
