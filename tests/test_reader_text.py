@@ -19,6 +19,8 @@ from __future__ import print_function
 
 from itertools import chain
 
+import six
+
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
 from amazon.ion.reader_text import reader
@@ -475,7 +477,8 @@ def _scalar_event_pairs(data, events, delimiter):
             input_event = e_read(data + delimiter)
             if space_delimited and event.value is not None \
                 and ((event.ion_type is IonType.SYMBOL) or
-                     (event.ion_type is IonType.STRING and b'"' != data[0])):  # triple-quoted strings
+                     (event.ion_type is IonType.STRING and
+                      six.byte2int(b'"') != six.indexbytes(data, 0))):  # triple-quoted strings
                 # Because annotations and field names are symbols, a space delimiter after a symbol isn't enough to
                 # generate a symbol event. Similarly, triple-quoted strings may be followed by another triple-quoted
                 # string if only delimited by whitespace or comments. To address this issue, these types
@@ -511,7 +514,7 @@ def _top_level_value_params(delimiter=b' ', is_delegate=False):
         if first.event_type is IonEventType.INCOMPLETE:  # Happens with space-delimited symbol values.
             _, first = event_pairs[1]
         yield _P(
-            desc='TL %s - %s - %r' % \
+            desc='TL %s - %s - %r' %
                  (first.event_type.name, first.ion_type.name, data),
             event_pairs=[(NEXT, END)] + event_pairs + [(NEXT, END)],
         )
@@ -530,12 +533,12 @@ def _all_scalars_in_one_container_params():
                 pairs = ((i, o) for i, o in event_pairs)
                 while True:
                     try:
-                        input_event, output_event = pairs.next()
+                        input_event, output_event = next(pairs)
                         yield input_event, output_event
                         if output_event is INC:
                             # This is a symbol value.
-                            yield pairs.next()  # Input: a scalar. Output: the symbol value's event.
-                            yield pairs.next()  # Input: NEXT. Output: the previous scalar's event.
+                            yield next(pairs)  # Input: a scalar. Output: the symbol value's event.
+                            yield next(pairs)  # Input: NEXT. Output: the previous scalar's event.
                         yield (NEXT, INC)
                     except StopIteration:
                         break
@@ -624,14 +627,14 @@ def _annotate_params(params, is_delegate=False):
     while True:
         delimiter = yield
         params_list = _collect_params(params, delimiter)
-        test_annotations, expected_annotations = _annotations_generator.next()
+        test_annotations, expected_annotations = next(_annotations_generator)
         for param in params_list:
             @listify
             def annotated():
                 pairs = ((i, o) for i, o in param.event_pairs)
                 while True:
                     try:
-                        input_event, output_event = pairs.next()
+                        input_event, output_event = next(pairs)
                         if input_event.type is ReadEventType.DATA:
                             data = b''
                             for test_annotation in test_annotations:
@@ -640,7 +643,7 @@ def _annotate_params(params, is_delegate=False):
                             input_event = read_data_event(data)
                             if output_event is INC:
                                 yield input_event, output_event
-                                input_event, output_event = pairs.next()
+                                input_event, output_event = next(pairs)
                             output_event = output_event.derive_annotations(expected_annotations)
                         yield input_event, output_event
                     except StopIteration:
@@ -688,7 +691,7 @@ def _containerize_params(param_generator, with_skip=True, is_delegate=False, top
                     first = True
                     for read_event, ion_event in event_pairs:
                         if not container and read_event.type is ReadEventType.DATA:
-                            field_name, expected_field_name = _field_name_generator.next()
+                            field_name, expected_field_name = next(_field_name_generator)
                             data = field_name + b':' + read_event.data
                             read_event = read_data_event(data)
                             ion_event = ion_event.derive_field_name(expected_field_name)
@@ -741,7 +744,7 @@ def _expect_event(expected_event, data, events, delimiter):
     """
     events += (expected_event,)
     outputs = events[1:]
-    event_pairs = [(e_read(data + delimiter), events[0])] + zip([NEXT] * len(outputs), outputs)
+    event_pairs = [(e_read(data + delimiter), events[0])] + list(zip([NEXT] * len(outputs), outputs))
     return event_pairs
 
 
@@ -749,7 +752,7 @@ def _expect_event(expected_event, data, events, delimiter):
 def _basic_params(event_func, desc, delimiter, data_event_pairs, is_delegate=False, top_level=True):
     while True:
         yield
-        params = zip(*list(value_iter(event_func, data_event_pairs, delimiter)))[1]
+        params = list(zip(*list(value_iter(event_func, data_event_pairs, delimiter))))[1]
         for param in _paired_params(params, desc, top_level):
             yield param
         if not is_delegate:

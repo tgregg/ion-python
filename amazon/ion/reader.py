@@ -107,7 +107,8 @@ class BufferQueue(object):
     def unread(self, c):
         if self.position < 1:
             raise IndexError('Cannot unread an empty buffer queue.')
-        c = six.int2byte(c)
+        if six.PY2:
+            c = chr(c)  # Symmetrical with six.indexbytes in read_byte.
         if self.__offset == 0:
             self.__segments.appendleft([c])
         else:

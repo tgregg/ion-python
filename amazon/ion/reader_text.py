@@ -17,7 +17,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import string
 from collections import defaultdict
 from functools import partial
 
@@ -63,59 +62,59 @@ def _merge_dicts(*args):
 
 
 def _seq(s):
-    return tuple(_o(x) for x in s)
+    return tuple(six.iterbytes(s))
 
 
-_WHITESPACE = _seq(' \t\n\r')
-_VALUE_TERMINATORS = _seq('{}[](),\"\' \t\n\r/')
-_SYMBOL_TOKEN_TERMINATORS = _WHITESPACE + _seq('/:')
-_DIGITS = _seq(string.digits)
-_BINARY_RADIX = _seq('Bb')
-_BINARY_DIGITS = _seq('01')
-_HEX_RADIX = _seq('Xx')
-_HEX_DIGITS = _DIGITS + _seq('abcdef')
-_DECIMAL_EXPS = _seq('Dd')
-_FLOAT_EXPS = _seq('Ee')
-_TIMESTAMP_YEAR_DELIMITERS = _seq('-T')
-_TIMESTAMP_DELIMITERS = _seq('-:+.')
-_TIMESTAMP_OFFSET_INDICATORS = _seq('Z+-')
-_LETTERS = _seq(string.ascii_letters)
-_BASE64_DIGITS = _LETTERS + _DIGITS + _seq('+/')
-_IDENTIFIER_STARTS = _LETTERS + _seq('$_')
+_WHITESPACE = _seq(b' \t\n\r')
+_VALUE_TERMINATORS = _seq(b'{}[](),\"\' \t\n\r/')
+_SYMBOL_TOKEN_TERMINATORS = _WHITESPACE + _seq(b'/:')
+_DIGITS = _seq(b'0123456789')
+_BINARY_RADIX = _seq(b'Bb')
+_BINARY_DIGITS = _seq(b'01')
+_HEX_RADIX = _seq(b'Xx')
+_HEX_DIGITS = _DIGITS + _seq(b'abcdef')
+_DECIMAL_EXPS = _seq(b'Dd')
+_FLOAT_EXPS = _seq(b'Ee')
+_TIMESTAMP_YEAR_DELIMITERS = _seq(b'-T')
+_TIMESTAMP_DELIMITERS = _seq(b'-:+.')
+_TIMESTAMP_OFFSET_INDICATORS = _seq(b'Z+-')
+_LETTERS = _seq(b'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
+_BASE64_DIGITS = _LETTERS + _DIGITS + _seq(b'+/')
+_IDENTIFIER_STARTS = _LETTERS + _seq(b'$_')
 _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
-_OPERATORS = _seq('!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no, java: no, grammar: yes
+_OPERATORS = _seq(b'!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no, java: no, grammar: yes
 
-_UNDERSCORE = _o('_')
-_DOT = _o('.')
-_COMMA = _o(',')
-_COLON = _o(':')
-_SLASH = _o('/')
-_ASTERISK = _o('*')
-_BACKSLASH = _o('\\')
-_NEWLINE = _o('\n')
-_DOUBLE_QUOTE = _o('"')
-_SINGLE_QUOTE = _o('\'')
-_PLUS = _o('+')
-_MINUS = _o('-')
+_UNDERSCORE = _o(b'_')
+_DOT = _o(b'.')
+_COMMA = _o(b',')
+_COLON = _o(b':')
+_SLASH = _o(b'/')
+_ASTERISK = _o(b'*')
+_BACKSLASH = _o(b'\\')
+_NEWLINE = _o(b'\n')
+_DOUBLE_QUOTE = _o(b'"')
+_SINGLE_QUOTE = _o(b'\'')
+_PLUS = _o(b'+')
+_MINUS = _o(b'-')
 _HYPHEN = _MINUS
-_T = _o('T')
-_Z = _o('Z')
-_T_LOWER = _o('t')
-_N_LOWER = _o('n')
-_F_LOWER = _o('f')
+_T = _o(b'T')
+_Z = _o(b'Z')
+_T_LOWER = _o(b't')
+_N_LOWER = _o(b'n')
+_F_LOWER = _o(b'f')
 _ZERO = _DIGITS[0]
-_OPEN_BRACE = _o('{')
-_OPEN_BRACKET = _o('[')
-_OPEN_PAREN = _o('(')
-_CLOSE_BRACE = _o('}')
-_CLOSE_BRACKET = _o(']')
-_CLOSE_PAREN = _o(')')
-_BASE64_PAD = _o('=')
+_OPEN_BRACE = _o(b'{')
+_OPEN_BRACKET = _o(b'[')
+_OPEN_PAREN = _o(b'(')
+_CLOSE_BRACE = _o(b'}')
+_CLOSE_BRACKET = _o(b']')
+_CLOSE_PAREN = _o(b')')
+_BASE64_PAD = _o(b'=')
 
-_TRUE_SEQUENCE = _seq('rue')
-_FALSE_SEQUENCE = _seq('alse')
-_NAN_SEQUENCE = _seq('an')
-_INF_SEQUENCE = _seq('inf')
+_TRUE_SEQUENCE = _seq(b'rue')
+_FALSE_SEQUENCE = _seq(b'alse')
+_NAN_SEQUENCE = _seq(b'an')
+_INF_SEQUENCE = _seq(b'inf')
 
 
 class _NullSequence:
@@ -126,50 +125,50 @@ class _NullSequence:
     def __getitem__(self, item):
         return self.sequence[item]
 
-_NULL_SEQUENCE = _NullSequence(IonType.NULL, _seq('ull'))
-_NULL_SYMBOL_SEQUENCE = _NullSequence(IonType.SYMBOL, _seq('mbol'))
-_NULL_SEXP_SEQUENCE = _NullSequence(IonType.SEXP, _seq('xp'))
-_NULL_STRING_SEQUENCE = _NullSequence(IonType.STRING, _seq('ng'))
-_NULL_STRUCT_SEQUENCE = _NullSequence(IonType.STRUCT, _seq('ct'))
-_NULL_INT_SEQUENCE = _NullSequence(IonType.INT, _seq('nt'))
-_NULL_FLOAT_SEQUENCE = _NullSequence(IonType.FLOAT, _seq('loat'))
-_NULL_DECIMAL_SEQUENCE = _NullSequence(IonType.DECIMAL, _seq('ecimal'))
-_NULL_CLOB_SEQUENCE = _NullSequence(IonType.CLOB, _seq('lob'))
-_NULL_LIST_SEQUENCE = _NullSequence(IonType.LIST, _seq('ist'))
-_NULL_BLOB_SEQUENCE = _NullSequence(IonType.BLOB, _seq('ob'))
-_NULL_BOOL_SEQUENCE = _NullSequence(IonType.BOOL, _seq('ol'))
-_NULL_TIMESTAMP_SEQUENCE = _NullSequence(IonType.TIMESTAMP, _seq('imestamp'))
+_NULL_SEQUENCE = _NullSequence(IonType.NULL, _seq(b'ull'))
+_NULL_SYMBOL_SEQUENCE = _NullSequence(IonType.SYMBOL, _seq(b'mbol'))
+_NULL_SEXP_SEQUENCE = _NullSequence(IonType.SEXP, _seq(b'xp'))
+_NULL_STRING_SEQUENCE = _NullSequence(IonType.STRING, _seq(b'ng'))
+_NULL_STRUCT_SEQUENCE = _NullSequence(IonType.STRUCT, _seq(b'ct'))
+_NULL_INT_SEQUENCE = _NullSequence(IonType.INT, _seq(b'nt'))
+_NULL_FLOAT_SEQUENCE = _NullSequence(IonType.FLOAT, _seq(b'loat'))
+_NULL_DECIMAL_SEQUENCE = _NullSequence(IonType.DECIMAL, _seq(b'ecimal'))
+_NULL_CLOB_SEQUENCE = _NullSequence(IonType.CLOB, _seq(b'lob'))
+_NULL_LIST_SEQUENCE = _NullSequence(IonType.LIST, _seq(b'ist'))
+_NULL_BLOB_SEQUENCE = _NullSequence(IonType.BLOB, _seq(b'ob'))
+_NULL_BOOL_SEQUENCE = _NullSequence(IonType.BOOL, _seq(b'ol'))
+_NULL_TIMESTAMP_SEQUENCE = _NullSequence(IonType.TIMESTAMP, _seq(b'imestamp'))
 
 _NULL_STR_NEXT = {
-    _o('i'): _NULL_STRING_SEQUENCE,
-    _o('u'): _NULL_STRUCT_SEQUENCE
+    _o(b'i'): _NULL_STRING_SEQUENCE,
+    _o(b'u'): _NULL_STRUCT_SEQUENCE
 }
 
 _NULL_ST_NEXT = {
-    _o('r'): _NULL_STR_NEXT
+    _o(b'r'): _NULL_STR_NEXT
 }
 
 _NULL_S_NEXT = {
-    _o('y'): _NULL_SYMBOL_SEQUENCE,
-    _o('e'): _NULL_SEXP_SEQUENCE,
-    _o('t'): _NULL_ST_NEXT
+    _o(b'y'): _NULL_SYMBOL_SEQUENCE,
+    _o(b'e'): _NULL_SEXP_SEQUENCE,
+    _o(b't'): _NULL_ST_NEXT
 }
 
 _NULL_B_NEXT = {
-    _o('l'): _NULL_BLOB_SEQUENCE,
-    _o('o'): _NULL_BOOL_SEQUENCE
+    _o(b'l'): _NULL_BLOB_SEQUENCE,
+    _o(b'o'): _NULL_BOOL_SEQUENCE
 }
 
 _NULL_STARTS = {
-    _o('n'): _NULL_SEQUENCE,  # null.null
-    _o('s'): _NULL_S_NEXT, # null.string, null.symbol, null.struct, null.sexp
-    _o('i'): _NULL_INT_SEQUENCE,  # null.int
-    _o('f'): _NULL_FLOAT_SEQUENCE,  # null.float
-    _o('d'): _NULL_DECIMAL_SEQUENCE,  # null.decimal
-    _o('b'): _NULL_B_NEXT,  # null.bool, null.blob
-    _o('c'): _NULL_CLOB_SEQUENCE,  # null.clob
-    _o('l'): _NULL_LIST_SEQUENCE,  # null.list
-    _o('t'): _NULL_TIMESTAMP_SEQUENCE,  # null.timestamp
+    _o(b'n'): _NULL_SEQUENCE,  # null.null
+    _o(b's'): _NULL_S_NEXT, # null.string, null.symbol, null.struct, null.sexp
+    _o(b'i'): _NULL_INT_SEQUENCE,  # null.int
+    _o(b'f'): _NULL_FLOAT_SEQUENCE,  # null.float
+    _o(b'd'): _NULL_DECIMAL_SEQUENCE,  # null.decimal
+    _o(b'b'): _NULL_B_NEXT,  # null.bool, null.blob
+    _o(b'c'): _NULL_CLOB_SEQUENCE,  # null.clob
+    _o(b'l'): _NULL_LIST_SEQUENCE,  # null.list
+    _o(b't'): _NULL_TIMESTAMP_SEQUENCE,  # null.timestamp
 }
 
 
@@ -477,7 +476,7 @@ def _generate_radix_int_handler(radix_indicators, charset):
                ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
                 (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
                ctx.ion_type == IonType.INT
-    return _generate_numeric_handler(charset, lambda (prev, c, ctx): _illegal_character(c, ctx),
+    return _generate_numeric_handler(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
                                      assertion, radix_indicators, illegal_at_end=radix_indicators)
 
 
@@ -824,7 +823,7 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
             ctx.value.append(c_start)
             c, self = yield
         else:
-            assert ctx.value[0] == _o(c_start)
+            assert ctx.value[0] == c_start
             assert c not in _DIGITS
             ctx.queue.unread(c)
             next_ctx = ctx
@@ -839,7 +838,7 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
                     maybe_inf = c == _INF_SEQUENCE[match_index]
                 else:
                     if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
-                        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, bytearray(c_start + b'inf'))
+                        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, bytearray(six.int2byte(c_start) + b'inf'))
                     else:
                         maybe_inf = False
             if maybe_inf:
@@ -862,8 +861,8 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
     return inf_or_operator_handler
 
 
-_negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(_c(_MINUS))
-_positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(_c(_PLUS), is_delegate=False)
+_negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(_MINUS)
+_positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(_PLUS, is_delegate=False)
 
 
 @coroutine
@@ -1403,7 +1402,7 @@ def _skip_trampoline(handler):
             while True:
                 trans, delegate, event = pass_through()
                 if event is not None:
-                    if event.depth <= depth and event.event_type is IonEventType.CONTAINER_END:
+                    if event.event_type is IonEventType.CONTAINER_END and event.depth <= depth:
                         break
                 if event is None or event.event_type is IonEventType.INCOMPLETE:
                     data_event, _ = yield Transition(event, self)
