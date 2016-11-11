@@ -30,15 +30,19 @@ from .util import coroutine, Enum
 
 class BufferQueue(object):
     """A simple circular buffer of buffers."""
-    def __init__(self):
+    def __init__(self, is_unicode=False):
         self.__segments = deque()
         self.__offset = 0
         self.__size = 0
         self.position = 0
+        self.is_unicode = is_unicode
 
     def extend(self, data):
         # TODO Determine if there are any other accumulation strategies that make sense.
         # TODO Determine if we should use memoryview to avoid copying.
+        if not (self.is_unicode ^ isinstance(data, six.binary_type)):
+            raise ValueError('Incompatible input data types. Expected %r.'
+                             % (self.is_unicode and six.text_type or six.binary_type,))
         self.__segments.append(data)
         self.__size += len(data)
 
@@ -107,7 +111,7 @@ class BufferQueue(object):
     def unread(self, c):
         if self.position < 1:
             raise IndexError('Cannot unread an empty buffer queue.')
-        if six.PY2:
+        if six.PY2 or self.is_unicode:
             c = chr(c)  # Symmetrical with six.indexbytes in read_byte.
         if self.__offset == 0:
             self.__segments.appendleft([c])
@@ -132,6 +136,11 @@ class BufferQueue(object):
             rem = 0
             self.read(length, skip=True)
         return rem
+
+    def __iter__(self):
+        while self.__size > 0:
+            yield self.read_byte()
+        raise StopIteration()
 
     def __len__(self):
         return self.__size
