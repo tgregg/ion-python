@@ -91,6 +91,19 @@ class BufferQueue(object):
             length -= segment_read_len
         return data
 
+    def cp_to_int(self, segment, offset):
+        b = six.indexbytes(segment, offset)
+        if self.is_unicode and six.PY3:
+            return ord(b)
+        return b
+
+    def int_to_cp(self, b):
+        if self.is_unicode:
+            return six.unichr(b)
+        if six.PY2:
+            return chr(b)
+        return b
+
     def read_byte(self):
         if self.__size < 1:
             raise IndexError('Buffer queue is empty')
@@ -98,7 +111,7 @@ class BufferQueue(object):
         segment = segments[0]
         segment_len = len(segment)
         offset = self.__offset
-        octet = six.indexbytes(segment, offset)
+        octet = self.cp_to_int(segment, offset)
         offset += 1
         if offset == segment_len:
             offset = 0
@@ -111,8 +124,7 @@ class BufferQueue(object):
     def unread(self, c):
         if self.position < 1:
             raise IndexError('Cannot unread an empty buffer queue.')
-        if six.PY2 or self.is_unicode:
-            c = chr(c)  # Symmetrical with six.indexbytes in read_byte.
+        c = self.int_to_cp(c)
         if self.__offset == 0:
             self.__segments.appendleft([c])
         else:

@@ -22,6 +22,7 @@ from functools import partial
 
 import collections
 import six
+import sys
 
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
     IonEventType
@@ -199,10 +200,15 @@ class CodePointArray(collections.MutableSequence):
                 self.append(b)
 
     def append(self, value):
+        if value > sys.maxunicode:
+            raise IonException('Unsupported unicode character %d. Out of sys.maxunicode range.' % (value,))
         self.value += six.unichr(value)
 
     def __eq__(self, other):
-        return other.value == self.value
+        return other == self.value
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
     def __len__(self):
         return len(self.value)
@@ -224,6 +230,7 @@ class CodePointArray(collections.MutableSequence):
 
     def __delitem__(self, index):
         raise ValueError('Attempted to delete from code point sequence.')
+
 
 class _HandlerContext(record(
     'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type', 'pending_symbol'
@@ -1482,11 +1489,11 @@ class _CodePointHolder:
 def _next_code_point_handler(whence, ctx, out, stream_event):
     data_event, self = yield
     queue = ctx.queue
-    next_cp = queue.is_unicode and partial(next_code_point, to_int=ord) or next_code_point
     if len(queue) == 0:
         yield ctx.read_data_event(self, stream_event=stream_event)
     queue_iter = iter(queue)
-    code_point = next_cp(queue_iter)
+    code_point_generator = next_code_point(queue, queue_iter)
+    code_point = next(code_point_generator)
     if not queue.is_unicode:
         octet = code_point
         if octet == _BACKSLASH:  # TODO and escapes allowed
@@ -1516,7 +1523,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
             yield Transition(None, whence)
     while code_point is None:
         yield ctx.read_data_event(self)
-        code_point = next_cp(queue_iter)
+        code_point = next(code_point_generator)
     out.code_point = code_point
     yield Transition(None, whence)
 

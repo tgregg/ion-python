@@ -203,7 +203,7 @@ def unicode_iter(val):
     val_iter = iter(val)
     while True:
         try:
-            code_point = next_code_point(val_iter, ord)
+            code_point = next(next_code_point(val, val_iter, ord))
             if code_point is None:
                 raise ValueError('Unpaired high surrogate at end of Unicode sequence: %r' % val)
             yield code_point
@@ -211,7 +211,7 @@ def unicode_iter(val):
             break
 
 
-def next_code_point(val_iter, to_int=lambda x: x):
+def next_code_point(val, val_iter, to_int=lambda x: x):
     """Provides the next *code point* in the given Unicode sequence.
 
     Notes:
@@ -228,7 +228,7 @@ def next_code_point(val_iter, to_int=lambda x: x):
     if _LOW_SURROGATE_START <= code_point <= _LOW_SURROGATE_END:
         raise ValueError('Unpaired low surrogate in Unicode sequence: %d' % code_point)
     elif _HIGH_SURROGATE_START <= code_point <= _HIGH_SURROGATE_END:
-        try:
+        def combine_surrogates():
             low_code_point = to_int(next(val_iter))
             if low_code_point < _LOW_SURROGATE_START or low_code_point > _LOW_SURROGATE_END:
                 raise ValueError('Unpaired high surrogate: %d' % code_point)
@@ -237,10 +237,14 @@ def next_code_point(val_iter, to_int=lambda x: x):
             real_code_point |= (code_point - _HIGH_SURROGATE_START) << 10
             real_code_point |= (low_code_point - _LOW_SURROGATE_START)
             return real_code_point
+        try:
+            yield combine_surrogates()
         except StopIteration:
-            return None
+            yield None
+            val_iter = iter(val)  # More data has appeared in val.
+            yield combine_surrogates()
     else:
-        return code_point
+        yield code_point
 
 
 if sys.version_info < (2, 7):
