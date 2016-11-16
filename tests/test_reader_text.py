@@ -20,6 +20,7 @@ from __future__ import print_function
 from itertools import chain
 
 import six
+import sys
 
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
@@ -299,6 +300,54 @@ _GOOD = (
     (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(field_name=u'foobar', value=u'baz'))
 )
 
+_UCS2 = sys.maxunicode < 0x10ffff
+
+
+_GOOD_UNICODE = (
+    (u'{foo:bar}',) + _good_struct(e_symbol(u'bar', field_name=u'foo')),
+    (u'{foo:"b\xf6\u3000r"}',) + _good_struct(e_string(u'b\xf6\u3000r', field_name=u'foo')),
+    (u'{\'b\xf6\u3000r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\u3000r')),
+    (u'\x7b\x7d',) + _good_struct(),
+    (u'\u005b\u005d',) + _good_list(),
+    (u'\u0028\x29',) + _good_sexp(),
+    (u'\u0022\u0061\u0062\u0063\u0022', e_string(u'abc')),
+    (u'{foo:"b\xf6\U0001f4a9r"}',) + _good_struct(e_string(u'b\xf6\U0001f4a9r', field_name=u'foo')),
+    (u'{\'b\xf6\U0001f4a9r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
+    (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(u'b\xf6\U0001f4a9r',))),
+)
+
+_BAD_UNICODE = (
+    (u'\xf6',),  # Not an acceptable identifier symbol.
+    (u'\U0001f4a9r',),
+    (u'{foo:b\xf6\u3000r}', e_start_struct()),
+    (u'{b\xf6\u3000r:"foo"}', e_start_struct()),
+    (u'b\xf6\U0001f4a9r::"foo"',),
+)
+
+_GOOD_ESCAPES_FROM_UNICODE = (
+    (u'"\\xf6"', e_string(u'\xf6')),
+    (u'"\\u3000"', e_string(u'\u3000')),
+    (u'["\\U0001f4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
+)
+
+_GOOD_ESCAPES_FROM_BYTES = (
+    (br'"\xf6"', e_string(u'\xf6')),
+    (br'"\u3000"', e_string(u'\u3000')),
+    (br'["\U0001f4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
+)
+
+_UNICODE_SURROGATES = (
+    # TODO surrogate pair split between input events, etc. Only works with UCS2
+)
+
+_BAD_ESCAPES_FROM_UNICODE = (
+    # TODO
+)
+
+_BAD_ESCAPES_FROM_BYTES = (
+    # TODO
+)
+
 
 _UNSPACED_SEXPS = (
     (b'(a/b)',) + _good_sexp(e_symbol(u'a'), e_symbol(u'/'), e_symbol(u'b')),
@@ -441,7 +490,6 @@ _GOOD_SCALARS = (
     (b'" "', e_string(u' ')),
     (b'\'\'\'foo\'\'\' \'\'\'\'\'\' \'\'\'""\'\'\'', e_string(u'foo""')),
     (b'\'\'\'ab\'\'cd\'\'\'', e_string(u'ab\'\'cd')),
-    # TODO escape sequences
 
     (b'null.clob', e_clob()),
     (b'{{""}}', e_clob(u'')),
@@ -766,22 +814,29 @@ def _paired_params(params, desc, top_level=True):
             event_pairs = [(NEXT, END)] + event_pairs
         yield _P(
             desc='%s %s' % (desc, data),
-            event_pairs=event_pairs
+            event_pairs=event_pairs,
+            is_unicode=isinstance(data, six.text_type)
         )
 
 
 _ion_exception = partial(_expect_event, IonException)
 _bad_params = partial(_basic_params, _ion_exception, 'BAD', b' ')
+_bad_unicode_params = partial(_basic_params, _ion_exception, 'BAD', u' ')
 _incomplete = partial(_expect_event, INC)
 _incomplete_params = partial(_basic_params, _incomplete, 'INC', b'')
 _end = partial(_expect_event, END)
 _good_params = partial(_basic_params, _end, 'GOOD', b'')
+_good_unicode_params = partial(_basic_params, _end, 'GOOD', u'')
 
 
 @parametrize(*chain(
     _good_params(_GOOD),
     _bad_params(_BAD),
     _incomplete_params(_INCOMPLETE),
+    _good_unicode_params(_GOOD_UNICODE),
+    _good_unicode_params(_GOOD_ESCAPES_FROM_UNICODE),
+    _good_params(_GOOD_ESCAPES_FROM_BYTES),
+    _bad_unicode_params(_BAD_UNICODE),
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),
     _top_level_value_params(),  # all top-level values as individual data events, space-delimited
@@ -799,4 +854,4 @@ _good_params = partial(_basic_params, _end, 'GOOD', b'')
     _containerize_params(_annotate_params(_incomplete_params(_UNSPACED_SEXPS, is_delegate=True, top_level=False), is_delegate=True)),
 ))
 def test_raw_reader(p):
-    reader_scaffold(reader(), p.event_pairs)
+    reader_scaffold(reader(is_unicode=p.is_unicode), p.event_pairs)

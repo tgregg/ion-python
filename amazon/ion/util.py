@@ -193,7 +193,7 @@ _SURROGATE_START = _HIGH_SURROGATE_START
 _SURROGATE_END = _LOW_SURROGATE_END
 
 
-def unicode_iter(val):
+def unicode_iter(val, yield_char=False):
     """Provides an iterator over the *code points* of the given Unicode sequence.
 
     Args:
@@ -203,7 +203,7 @@ def unicode_iter(val):
     val_iter = iter(val)
     while True:
         try:
-            code_point = next(next_code_point(val, val_iter, ord))
+            code_point = next(next_code_point(val, val_iter, yield_char, ord))
             if code_point is None:
                 raise ValueError('Unpaired high surrogate at end of Unicode sequence: %r' % val)
             yield code_point
@@ -211,7 +211,7 @@ def unicode_iter(val):
             break
 
 
-def next_code_point(val, val_iter, to_int=lambda x: x):
+def next_code_point(val, val_iter, yield_char, to_int=lambda x: x):
     """Provides the next *code point* in the given Unicode sequence.
 
     Notes:
@@ -224,27 +224,36 @@ def next_code_point(val, val_iter, to_int=lambda x: x):
             in the range ``0x0`` to ``0x10FFFF``.
         to_int (Optional[callable]): A function to call on each element of val_iter to convert that element to an int.
     """
-    code_point = to_int(next(val_iter))
+    high = next(val_iter)
+    low = None
+    code_point = to_int(high)
     if _LOW_SURROGATE_START <= code_point <= _LOW_SURROGATE_END:
         raise ValueError('Unpaired low surrogate in Unicode sequence: %d' % code_point)
     elif _HIGH_SURROGATE_START <= code_point <= _HIGH_SURROGATE_END:
         def combine_surrogates():
-            low_code_point = to_int(next(val_iter))
+            low_surrogate = next(val_iter)
+            low_code_point = to_int(low_surrogate)
             if low_code_point < _LOW_SURROGATE_START or low_code_point > _LOW_SURROGATE_END:
                 raise ValueError('Unpaired high surrogate: %d' % code_point)
             # Decode the surrogates
             real_code_point = _NON_BMP_OFFSET
             real_code_point |= (code_point - _HIGH_SURROGATE_START) << 10
             real_code_point |= (low_code_point - _LOW_SURROGATE_START)
-            return real_code_point
+            return real_code_point, low_surrogate
         try:
-            yield combine_surrogates()
+            code_point, low = combine_surrogates()
         except StopIteration:
             yield None
             val_iter = iter(val)  # More data has appeared in val.
-            yield combine_surrogates()
+            code_point, low = combine_surrogates()
+    if yield_char:
+        if low is None:
+            out = code_point, (high,)
+        else:
+            out = code_point, (high, low)
     else:
-        yield code_point
+        out = code_point
+    yield out
 
 
 if sys.version_info < (2, 7):

@@ -47,7 +47,7 @@ def add_depths(events):
                 depth += 1
 
 
-class ReaderParameter(record('desc', 'event_pairs')):
+class ReaderParameter(record('desc', 'event_pairs', ('is_unicode', False))):
     def __str__(self):
         return self.desc
 
