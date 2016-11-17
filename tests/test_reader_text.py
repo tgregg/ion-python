@@ -303,8 +303,6 @@ _GOOD = (
     (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(field_name=u'foobar', value=u'baz'))
 )
 
-_UCS2 = sys.maxunicode < 0x10ffff
-
 
 _GOOD_UNICODE = (
     (u'{foo:bar}',) + _good_struct(e_symbol(u'bar', field_name=u'foo')),
@@ -319,6 +317,7 @@ _GOOD_UNICODE = (
     (u'{"b\xf6\U0001f4a9r\":"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
     (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'\xf6\U0001f4a9r')),
     (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(u'b\xf6\U0001f4a9r',))),
+    (u'"\t\n\r\v\f\a\b\0\'"', e_string(u'\t\n\r\v\f\a\b\0\''))
 )
 
 _BAD_UNICODE = (
@@ -336,13 +335,27 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'"\\xf6"', e_string(u'\xf6')),
     (u'"\\u3000"', e_string(u'\u3000')),
     (u'["\\U0001f4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
+    (u'"\\t\\n"\'\\\'\'"\\0"', e_string(u'\t\n'), e_symbol(u'\''), e_string(u'\0')),
+    (u'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
+    (u'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))),
+    (u'\'\\?\\f\'::\'\\xf6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
+    (u"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
+    (u"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
 )
 
 _GOOD_ESCAPES_FROM_BYTES = (
     (br'"\xf6"', e_string(u'\xf6')),
     (br'"\u3000"', e_string(u'\u3000')),
     (br'["\U0001f4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
+    (b'"\\t\\n"\'\\\'\'"\\0"', e_string(u'\t\n'), e_symbol(u'\''), e_string(u'\0')),
+    (b'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
+    (b'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))),
+    (b'\'\\?\\f\'::\'\\xf6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
+    (b"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
+    (b"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
 )
+
+_UCS2 = sys.maxunicode < 0x10ffff
 
 _UNICODE_SURROGATES = (
     # Note: Surrogates only allowed with UCS2.
@@ -351,11 +364,15 @@ _UNICODE_SURROGATES = (
 )
 
 _BAD_ESCAPES_FROM_UNICODE = (
-    # TODO
+    # TODO escapes outside of quoted text
+    (u'"\\g"',),
+    (u'\'\\q\'',),
 )
 
 _BAD_ESCAPES_FROM_BYTES = (
     # TODO
+    (br'"\g"',),
+    (br'\'\q\'',),
 )
 
 
@@ -847,6 +864,8 @@ _good_unicode_params = partial(_basic_params, _end, 'GOOD', u'')
     _good_unicode_params(_GOOD_ESCAPES_FROM_UNICODE),
     _good_params(_GOOD_ESCAPES_FROM_BYTES),
     _bad_unicode_params(_BAD_UNICODE),
+    _bad_unicode_params(_BAD_ESCAPES_FROM_UNICODE),
+    _bad_params(_BAD_ESCAPES_FROM_BYTES),
     _UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),

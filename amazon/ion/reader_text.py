@@ -84,6 +84,7 @@ _BASE64_DIGITS = _LETTERS + _DIGITS + _seq(b'+/')
 _IDENTIFIER_STARTS = _LETTERS + _seq(b'$_')
 _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
 _OPERATORS = _seq(b'!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no, java: no, grammar: yes
+_COMMON_ESCAPES = _seq(b'abtnfrv?0\'"/\\')  # TODO CR+LF?
 
 _UNDERSCORE = _o(b'_')
 _DOT = _o(b'.')
@@ -111,6 +112,10 @@ _CLOSE_BRACE = _o(b'}')
 _CLOSE_BRACKET = _o(b']')
 _CLOSE_PAREN = _o(b')')
 _BASE64_PAD = _o(b'=')
+_QUESTION_MARK = _o(b'?')
+_UNICODE_ESCAPE_2 = _o(b'x')
+_UNICODE_ESCAPE_4 = _o(b'u')
+_UNICODE_ESCAPE_8 = _o(b'U')
 
 _TRUE_SEQUENCE = _seq(b'rue')
 _FALSE_SEQUENCE = _seq(b'alse')
@@ -703,6 +708,13 @@ def _sexp_slash_handler(c, ctx, whence=None, pending_event=None):
         yield ctx.immediate_transition(_operator_symbol_handler(_SLASH, ctx))
 
 
+def _is_escaped(c):
+    try:
+        return c.is_escaped
+    except AttributeError:
+        return False
+
+
 @coroutine
 def _long_string_handler(c, ctx, is_field_name=False):
     assert c == _SINGLE_QUOTE
@@ -719,13 +731,12 @@ def _long_string_handler(c, ctx, is_field_name=False):
         val = ctx.pending_symbol
     quotes = 0
     in_data = True
-    prev = c
     c, self = yield
     here = (Transition(None, self), None)
     while True:
         trans = here
         # TODO error on disallowed escape sequences
-        if c == _SINGLE_QUOTE and prev != _BACKSLASH:
+        if c == _SINGLE_QUOTE and not _is_escaped(c):
             quotes += 1
             if quotes == 3:
                 in_data = not in_data
@@ -734,10 +745,8 @@ def _long_string_handler(c, ctx, is_field_name=False):
             if in_data:
                 # Any quotes found in the meantime are part of the data
                 val.extend([_SINGLE_QUOTE]*quotes)
+                val.append(c)
                 quotes = 0
-                # TODO should a backslash be appended - why is Java inconsistent between double- and triple-quoted?
-                if c != _BACKSLASH:
-                    val.append(c)
             else:
                 if quotes > 0:
                     assert quotes < 3
@@ -770,7 +779,6 @@ def _long_string_handler(c, ctx, is_field_name=False):
                         trans = ctx.immediate_transition(ctx.whence)
                     else:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
-        prev = c
         c, _ = yield trans
 
 
@@ -999,20 +1007,18 @@ def _generate_quoted_text_handler(delimiter, assertion, after, append_first=True
         ctx, val, event_on_close = before(ctx, is_field_name)
         if append_first:
             val.append(c)
-        prev = c
         c, self = yield
         trans = (Transition(None, self), None)
         done = False
         while not done:
             # TODO error on disallowed escape sequences
-            if c == delimiter and prev != _BACKSLASH:
+            if c == delimiter and not _is_escaped(c):
                 done = True
                 if event_on_close:
                     trans = on_close(ctx)
             else:
                 # TODO should a backslash be appended?
                 val.append(c)
-            prev = c
             c, _ = yield trans
         yield after(c, ctx, is_field_name)
     return quoted_text_handler
@@ -1044,7 +1050,7 @@ def _generate_short_string_handler():
 
 
 _short_string_handler = _generate_short_string_handler()
-_quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: c != _SINGLE_QUOTE, _symbol_token_end)
+_quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)), _symbol_token_end)
 
 
 def _generate_single_quote_handler(on_single_quote, on_other):
@@ -1052,7 +1058,7 @@ def _generate_single_quote_handler(on_single_quote, on_other):
     def single_quote_handler(c, ctx, is_field_name=False):
         assert c == _SINGLE_QUOTE
         c, self = yield
-        if c == _SINGLE_QUOTE:
+        if c == _SINGLE_QUOTE and not _is_escaped(c):
             yield ctx.immediate_transition(on_single_quote(c, ctx, is_field_name))
         else:
             yield on_other(c, ctx, is_field_name)
@@ -1486,6 +1492,7 @@ def _skip_trampoline(handler):
 class CodePoint(int):
     def __init__(self, *args, **kwargs):
         self.char = None
+        self.is_escaped = False
 
 
 class _CodePointHolder:
@@ -1519,8 +1526,14 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
                     num_digits = 6  # 4-digit unicode escapes
                 elif code_point == _o(b'U'):
                     num_digits = 10  # 8-digit unicode escapes
+                elif code_point in _COMMON_ESCAPES:
+                    if code_point == _SLASH or code_point == _QUESTION_MARK:
+                        escape_sequence = b''  # Drop the \. Python does not recognize these as escapes.
+                    escape_sequence += six.int2byte(code_point)
+                    break
                 else:
-                    pass  # TODO
+                    # This is a backslash followed by an invalid escape character. This is illegal.
+                    _illegal_character(code_point, ctx, 'Invalid escape sequence \\%s.' % (_c(code_point),))
                 escape_sequence += six.int2byte(code_point)
             else:
                 escape_sequence += six.int2byte(code_point)
@@ -1530,6 +1543,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
         cp_iter = unicode_iter(escape_sequence)
         out.code_point = CodePoint(next(cp_iter))
         out.code_point.char = escape_sequence
+        out.code_point.is_escaped = True
         yield Transition(None, whence)
     while code_point is None:
         yield ctx.read_data_event(self)
