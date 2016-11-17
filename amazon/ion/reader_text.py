@@ -27,11 +27,11 @@ import sys
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
     IonEventType
 from amazon.ion.exceptions import IonException
-from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType
+from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
 
 _o = six.byte2int
-_c = six.unichr
+_c = safe_unichr
 
 
 def _illegal_character(c, ctx, message=''):
@@ -200,11 +200,7 @@ class CodePointArray(collections.MutableSequence):
                 self.append(b)
 
     def append(self, value):
-        if hasattr(value, 'char'):
-            char = value.char
-        else:
-            char = six.unichr(value)
-        self.value += char
+        self.value += _c(value)
 
     def __eq__(self, other):
         return other == self.value
@@ -1500,27 +1496,29 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
         yield ctx.read_data_event(self, stream_event=stream_event)
     queue_iter = iter(queue)
     code_point_generator = next_code_point(queue, queue_iter, yield_char=True)
-    code_point, surrogates = next(code_point_generator)
-    octet = code_point
-    if octet == _BACKSLASH:  # TODO and escapes allowed
+    cp_pair = next(code_point_generator)
+    code_point, surrogates = (None, ())
+    if cp_pair is not None:
+        code_point, surrogates = cp_pair
+    if code_point == _BACKSLASH:  # TODO and escapes allowed
         escape_sequence = b'' + six.int2byte(_BACKSLASH)
         num_digits = None
         while True:
             if len(queue) == 0:
                 yield ctx.read_data_event(self, ION_STREAM_INCOMPLETE_EVENT)
-            octet = next(queue_iter)
+            code_point = next(queue_iter)
             if six.indexbytes(escape_sequence, -1) == _BACKSLASH:
-                if octet == _o(b'x'):
+                if code_point == _o(b'x'):
                     num_digits = 4  # 2-digit hex escapes
-                elif octet == _o(b'u'):
+                elif code_point == _o(b'u'):
                     num_digits = 6  # 4-digit unicode escapes
-                elif octet == _o(b'U'):
+                elif code_point == _o(b'U'):
                     num_digits = 10  # 8-digit unicode escapes
                 else:
                     pass  # TODO
-                escape_sequence += six.int2byte(octet)
+                escape_sequence += six.int2byte(code_point)
             else:
-                escape_sequence += six.int2byte(octet)
+                escape_sequence += six.int2byte(code_point)
                 if len(escape_sequence) == num_digits:
                     break
         escape_sequence = escape_sequence.decode('unicode-escape')
@@ -1530,7 +1528,9 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
         yield Transition(None, whence)
     while code_point is None:
         yield ctx.read_data_event(self)
-        code_point, surrogates = next(code_point_generator)
+        cp_pair = next(code_point_generator)
+        if cp_pair is not None:
+            code_point, surrogates = cp_pair
     if len(surrogates) > 1:
         out.code_point = CodePoint(code_point)
         out.code_point.char = u''

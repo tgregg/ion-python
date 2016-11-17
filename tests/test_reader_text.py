@@ -133,6 +133,7 @@ _BAD = (
     (b'\'\'\'foo\'\'\'/\'\'\'bar\'\'\'',),  # Dangling slash at the top level.
     (b'{{\'\'\'foo\'\'\' \'\'bar\'\'\'}}',),
     (b'{\'\'\'foo\'\'\'/**/\'\'bar\'\'\':baz}', e_start_struct()),  # Missing an opening ' before "bar".
+    #(b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\'a:baz}', e_start_struct()),  # Character after field name, before colon. # TODO raises eventually, but should raise like this
     (b'(1..)', e_start_sexp()),
     (b'(1.a)', e_start_sexp()),
     (b'(1.23.)', e_start_sexp()),
@@ -313,14 +314,18 @@ _GOOD_UNICODE = (
     (u'\u0022\u0061\u0062\u0063\u0022', e_string(u'abc')),
     (u'{foo:"b\xf6\U0001f4a9r"}',) + _good_struct(e_string(u'b\xf6\U0001f4a9r', field_name=u'foo')),
     (u'{\'b\xf6\U0001f4a9r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
+    (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'\xf6\U0001f4a9r')),
     (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(u'b\xf6\U0001f4a9r',))),
 )
 
 _BAD_UNICODE = (
     (u'\xf6',),  # Not an acceptable identifier symbol.
-    (u'\U0001f4a9r',),
+    (u'r\U0001f4a9',),
     (u'{foo:b\xf6\u3000r}', e_start_struct()),
-    (u'{b\xf6\u3000r:"foo"}', e_start_struct()),
+    (u'{b\xf6\u3000:"foo"}', e_start_struct()),
+    (u'{br\U0001f4a9:"foo"}', e_start_struct()),
+    (u'{br\U0001f4a9r:"foo"}', e_start_struct()),
+    #(u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\'a:"foo"}', e_start_struct()),  # TODO raises eventually, but should raise like this
     (u'b\xf6\U0001f4a9r::"foo"',),
 )
 
@@ -337,7 +342,9 @@ _GOOD_ESCAPES_FROM_BYTES = (
 )
 
 _UNICODE_SURROGATES = (
-    # TODO surrogate pair split between input events, etc. Only works with UCS2
+    # Note: Surrogates only allowed with UCS2.
+    [(e_read(u'"\ud83d\udca9"'), e_string(u'\U0001f4a9')), (NEXT, END)],
+    [(e_read(u'"\ud83d'), INC), (e_read(u'\udca9"'), e_string(u'\U0001f4a9')), (NEXT, END)],
 )
 
 _BAD_ESCAPES_FROM_UNICODE = (
@@ -837,6 +844,7 @@ _good_unicode_params = partial(_basic_params, _end, 'GOOD', u'')
     _good_unicode_params(_GOOD_ESCAPES_FROM_UNICODE),
     _good_params(_GOOD_ESCAPES_FROM_BYTES),
     _bad_unicode_params(_BAD_UNICODE),
+    _UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),
     _top_level_value_params(),  # all top-level values as individual data events, space-delimited

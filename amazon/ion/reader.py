@@ -28,6 +28,10 @@ from .core import ION_STREAM_END_EVENT
 from .util import coroutine, Enum
 
 
+def safe_unichr(c):
+    return (hasattr(c, 'char') and len(c.char) > 1) and c.char or six.unichr(c)
+
+
 class BufferQueue(object):
     """A simple circular buffer of buffers."""
     def __init__(self, is_unicode=False):
@@ -99,7 +103,7 @@ class BufferQueue(object):
 
     def int_to_cp(self, b):
         if self.is_unicode:
-            return six.unichr(b)
+            return safe_unichr(b)
         if six.PY2:
             return chr(b)
         return b
@@ -125,15 +129,23 @@ class BufferQueue(object):
         if self.position < 1:
             raise IndexError('Cannot unread an empty buffer queue.')
         c = self.int_to_cp(c)
+        num_code_units = self.is_unicode and len(c) or 1
         if self.__offset == 0:
             self.__segments.appendleft([c])
         else:
-            self.__offset -= 1
-            existing = self.__segments[0][self.__offset]
-            if existing != c:
-                raise ValueError('Attempted to unread %s when %s was expected.' % (c, existing))
-        self.__size += 1
-        self.position -= 1
+            self.__offset -= num_code_units
+
+            def verify(ch, idx):
+                existing = self.__segments[0][self.__offset + idx]
+                if existing != ch:
+                    raise ValueError('Attempted to unread %s when %s was expected.' % (ch, existing))
+            if num_code_units == 1:
+                verify(c, 0)
+            else:
+                for i in range(num_code_units):
+                    verify(c[i], i)
+        self.__size += num_code_units
+        self.position -= num_code_units
 
     def skip(self, length):
         """Removes ``length`` bytes and returns the number length still required to skip"""
