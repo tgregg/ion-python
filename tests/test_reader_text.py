@@ -133,7 +133,9 @@ _BAD = (
     (b'\'\'\'foo\'\'\'/\'\'\'bar\'\'\'',),  # Dangling slash at the top level.
     (b'{{\'\'\'foo\'\'\' \'\'bar\'\'\'}}',),
     (b'{\'\'\'foo\'\'\'/**/\'\'bar\'\'\':baz}', e_start_struct()),  # Missing an opening ' before "bar".
-    #(b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\'a:baz}', e_start_struct()),  # Character after field name, before colon. # TODO raises eventually, but should raise like this
+    (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\'a:baz}', e_start_struct()),  # Character after field name, before colon.
+    (b'{\'foo\'a:baz}', e_start_struct()),
+    (b'{"foo"a:baz}', e_start_struct()),
     (b'(1..)', e_start_sexp()),
     (b'(1.a)', e_start_sexp()),
     (b'(1.23.)', e_start_sexp()),
@@ -314,6 +316,7 @@ _GOOD_UNICODE = (
     (u'\u0022\u0061\u0062\u0063\u0022', e_string(u'abc')),
     (u'{foo:"b\xf6\U0001f4a9r"}',) + _good_struct(e_string(u'b\xf6\U0001f4a9r', field_name=u'foo')),
     (u'{\'b\xf6\U0001f4a9r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
+    (u'{"b\xf6\U0001f4a9r\":"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
     (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'\xf6\U0001f4a9r')),
     (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(u'b\xf6\U0001f4a9r',))),
 )
@@ -325,7 +328,7 @@ _BAD_UNICODE = (
     (u'{b\xf6\u3000:"foo"}', e_start_struct()),
     (u'{br\U0001f4a9:"foo"}', e_start_struct()),
     (u'{br\U0001f4a9r:"foo"}', e_start_struct()),
-    #(u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\'a:"foo"}', e_start_struct()),  # TODO raises eventually, but should raise like this
+    (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\'a:"foo"}', e_start_struct()),
     (u'b\xf6\U0001f4a9r::"foo"',),
 )
 

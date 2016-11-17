@@ -743,7 +743,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
                     assert quotes < 3
                     if is_field_name or is_clob:
                         # There are at least two values here, which is illegal for field names or within clobs.
-                        _illegal_character(c, ctx, "Malformed triple-quoted text: %s" % (val,))
+                        _illegal_character(c, ctx, 'Malformed triple-quoted text: %s' % (val,))
                     else:
                         # This string value is followed by a quoted symbol.
                         if ctx.container.is_delimited:
@@ -765,6 +765,8 @@ def _long_string_handler(c, ctx, is_field_name=False):
                         else:
                             trans = ctx.immediate_transition(_comment_handler(c, ctx, self))
                     elif is_field_name:
+                        if c != _COLON:
+                            _illegal_character(c, ctx, 'Illegal character after field name %s.' % (val,))
                         trans = ctx.immediate_transition(ctx.whence)
                     else:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
@@ -1358,6 +1360,9 @@ def _container_handler(c, ctx):
                             # Colon that doesn't indicate a field name or annotation.
                             _illegal_character(c, child_context)
                 else:
+                    if is_field_name:
+                        _illegal_character(c, child_context, 'Illegal character after field name %s.'
+                                           % (child_context.pending_symbol))
                     # It's a symbol value delimited by something other than a comma (i.e. whitespace or comment)
                     yield symbol_value_event()
                     child_context = None
