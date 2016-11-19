@@ -83,7 +83,7 @@ _LETTERS = _seq(b'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
 _BASE64_DIGITS = _LETTERS + _DIGITS + _seq(b'+/')
 _IDENTIFIER_STARTS = _LETTERS + _seq(b'$_')
 _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
-_OPERATORS = _seq(b'!#%&*+\-./;<=>?@^`|~')  # TODO is backslash allowed? Spec: no, java: no, grammar: yes
+_OPERATORS = _seq(b'!#%&*+-./;<=>?@^`|~')
 _COMMON_ESCAPES = _seq(b'abtnfrv?0\'"/\\')  # TODO CR+LF?
 
 _UNDERSCORE = _o(b'_')
@@ -236,7 +236,7 @@ class CodePointArray(collections.MutableSequence):
 
 
 class _HandlerContext(record(
-    'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type', 'pending_symbol'
+    'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type', 'pending_symbol', ('quoted_text', False)
 )):
     """A context for a handler co-routine.
 
@@ -254,6 +254,7 @@ class _HandlerContext(record(
         ion_type (Optional[IonType]): The IonType of the current token.
         pending_symbol (Optional[bytearray]): A pending symbol, which may end up being an annotation,
             field name, or symbol value.
+        quoted_text (Optional[bool]): True if this context represents quoted text; otherwise, False.
     """
 
     def event_transition(self, event_cls, event_type,
@@ -296,13 +297,13 @@ class _HandlerContext(record(
         return Transition(None, _read_data_handler(whence, self, stream_event=stream_event))
 
     def next_code_point(self, whence, complete):
-        # TODO is it possible to skip the transition when not in quoted text? This would likely lead to improved performance.
-        out = _CodePointHolder()
         stream_event = complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT
+        out = _CodePointHolder()
         return Transition(None, _next_code_point_handler(whence, self, out, stream_event)), out
 
-    def derive_unicode(self):
+    def derive_unicode(self, quoted_text=False):
         if isinstance(self.value, CodePointArray):  # TODO see if this can be prevented
+            assert self.quoted_text == quoted_text
             return self
         return _HandlerContext(
             self.container,
@@ -313,7 +314,21 @@ class _HandlerContext(record(
             self.whence,
             CodePointArray(self.value),
             self.ion_type,
-            self.pending_symbol
+            self.pending_symbol,
+            quoted_text
+        )
+
+    def derive_unquoted_text(self):
+        return _HandlerContext(
+            self.container,
+            self.queue,
+            self.field_name,
+            self.annotations,
+            self.depth,
+            self.whence,
+            self.value,
+            self.ion_type,
+            self.pending_symbol,
         )
 
     def derive_container_context(self, ion_type, whence, add_depth=1):
@@ -360,7 +375,8 @@ class _HandlerContext(record(
             self.whence,
             self.value,
             ion_type,
-            self.pending_symbol
+            self.pending_symbol,
+            self.quoted_text
         )
 
     def derive_annotation(self):
@@ -376,7 +392,7 @@ class _HandlerContext(record(
             self.whence,
             self.value,
             None,
-            None  # reset pending symbol
+            None,  # reset pending symbol
         )
 
     def derive_field_name(self):
@@ -391,7 +407,7 @@ class _HandlerContext(record(
             self.whence,
             self.value,
             self.ion_type,
-            None  # reset pending symbol
+            None,  # reset pending symbol
         )
 
     def derive_pending_symbol(self, pending_symbol=None):
@@ -406,7 +422,8 @@ class _HandlerContext(record(
             self.whence,
             bytearray(),  # reset value
             self.ion_type,
-            pending_symbol
+            pending_symbol,
+            self.quoted_text
         )
 
 
@@ -456,7 +473,7 @@ def _number_or_timestamp_handler(c, ctx):
     val = ctx.value
     val.append(c)
     c, self = yield
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     while True:
         if c in _VALUE_TERMINATORS:
             trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
@@ -493,7 +510,7 @@ def _generate_numeric_handler(charset, transition, assertion, illegal_before_und
             val.append(c)
         prev = c
         c, self = yield
-        trans = (Transition(None, self), None)
+        trans = ctx.immediate_transition(self)
         while True:
             if c in _VALUE_TERMINATORS:
                 if prev == _UNDERSCORE or prev in illegal_at_end:
@@ -582,7 +599,7 @@ def _timestamp_zero_start_handler(c, ctx):
         _illegal_character(c, ctx, 'Negative year not allowed.')
     val.append(c)
     c, self = yield
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     while True:
         if c in _TIMESTAMP_YEAR_DELIMITERS:
             trans = ctx.immediate_transition(_timestamp_handler(c, ctx))
@@ -615,7 +632,7 @@ def _timestamp_handler(c, ctx):
     val.append(c)
     prev = c
     c, self = yield
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     state = State.YEAR
     nxt = _DIGITS
     if prev == _T:
@@ -678,7 +695,7 @@ def _comment_handler(c, ctx, whence):
         _illegal_character(c, ctx, 'Illegal character sequence "/%s".' % (_c(c),))
     done = False
     prev = None
-    trans = (Transition(None, self), ctx)
+    trans = ctx.immediate_transition(self)
     while not done:
         c, _ = yield trans
         if block_comment:
@@ -723,23 +740,31 @@ def _long_string_handler(c, ctx, is_field_name=False):
     if not is_clob and not is_field_name:
         ctx = ctx.derive_ion_type(IonType.STRING)
     assert not ctx.value
-    ctx = ctx.derive_unicode()
+    ctx_in_data = ctx.derive_unicode(quoted_text=True)
+    ctx = ctx_in_data
     val = ctx.value
     if is_field_name:
         assert not val
         ctx = ctx.derive_pending_symbol()
         val = ctx.pending_symbol
+    ctx_outside_data = ctx.derive_unquoted_text()
     quotes = 0
     in_data = True
     c, self = yield
-    here = (Transition(None, self), None)
+    here_in_data = ctx_in_data.immediate_transition(self)
+    here_outside_data = ctx_outside_data.immediate_transition(self)
+    trans = here_in_data
     while True:
-        trans = here
-        # TODO error on disallowed escape sequences
         if c == _SINGLE_QUOTE and not _is_escaped(c):
             quotes += 1
             if quotes == 3:
                 in_data = not in_data
+                if in_data:
+                    trans = here_in_data
+                    ctx = ctx_in_data
+                else:
+                    trans = here_outside_data
+                    ctx = ctx_outside_data
                 quotes = 0
         else:
             if in_data:
@@ -780,6 +805,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
                     else:
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
         c, _ = yield trans
+        trans = in_data and here_in_data or here_outside_data
 
 
 @coroutine
@@ -790,7 +816,7 @@ def _typed_null_handler(c, ctx):
     i = 0
     length = None
     done = False
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     while True:
         if done:
             if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
@@ -829,7 +855,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
     maybe_true = c == _T_LOWER
     maybe_false = c == _F_LOWER
     c, self = yield
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     keyword_trans = None
     match_index = 0
     while True:
@@ -906,7 +932,7 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
             assert c == _
         maybe_inf = True
         match_index = 0
-        trans = (Transition(None, self), None)
+        trans = ctx.immediate_transition(self)
         while True:
             if maybe_inf:
                 if match_index < len(_INF_SEQUENCE):
@@ -948,20 +974,20 @@ def _operator_symbol_handler(c, ctx):
     val = ctx.value
     val.append(c)
     c, self = yield
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     while c in _OPERATORS:
         val.append(c)
         c, _ = yield trans
     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val)
 
 
-def _symbol_token_end(c, ctx, is_field_name):
-    if is_field_name or c in _SYMBOL_TOKEN_TERMINATORS:
+def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition):
+    if is_field_name or c in _SYMBOL_TOKEN_TERMINATORS or trans_cls is _SelfDelimitingTransition:
         # This might be an annotation or a field name.
         ctx = ctx.derive_pending_symbol(ctx.value)
-        trans = ctx.immediate_transition(ctx.whence)
+        trans = ctx.immediate_transition(ctx.whence, trans_cls=trans_cls)
     else:
-        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
+        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value, trans_cls=trans_cls)
     return trans
 
 
@@ -984,7 +1010,7 @@ def _identifier_symbol_handler(c, ctx, is_field_name=False):
     val.append(c)
     prev = c
     c, self = yield
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     while True:
         if c not in _WHITESPACE:
             if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
@@ -1003,21 +1029,21 @@ def _generate_quoted_text_handler(delimiter, assertion, after, append_first=True
     @coroutine
     def quoted_text_handler(c, ctx, is_field_name=False):
         assert assertion(c)
-        ctx = ctx.derive_unicode()
+        ctx = ctx.derive_unicode(quoted_text=True)
         ctx, val, event_on_close = before(ctx, is_field_name)
         if append_first:
             val.append(c)
         c, self = yield
-        trans = (Transition(None, self), None)
+        trans = ctx.immediate_transition(self)
         done = False
         while not done:
-            # TODO error on disallowed escape sequences
             if c == delimiter and not _is_escaped(c):
                 done = True
                 if event_on_close:
                     trans = on_close(ctx)
+                else:
+                    break
             else:
-                # TODO should a backslash be appended?
                 val.append(c)
             c, _ = yield trans
         yield after(c, ctx, is_field_name)
@@ -1043,14 +1069,15 @@ def _generate_short_string_handler():
                                     trans_cls=_SelfDelimitingTransition)
 
     def after(c, ctx, is_field_name):
-        return ctx.immediate_transition(is_field_name and ctx.whence or _clob_end_handler(c, ctx))
+        ctx = ctx.derive_unquoted_text()
+        return ctx.immediate_transition(is_field_name and ctx.whence or _clob_end_handler(c, ctx, is_self_delimited=True), trans_cls=_SelfDelimitingTransition)
 
     return _generate_quoted_text_handler(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, after, append_first=False,
                                          before=before, on_close=on_close)
 
 
 _short_string_handler = _generate_short_string_handler()
-_quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)), _symbol_token_end)
+_quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)), partial(_symbol_token_end, trans_cls=_SelfDelimitingTransition))
 
 
 def _generate_single_quote_handler(on_single_quote, on_other):
@@ -1059,18 +1086,19 @@ def _generate_single_quote_handler(on_single_quote, on_other):
         assert c == _SINGLE_QUOTE
         c, self = yield
         if c == _SINGLE_QUOTE and not _is_escaped(c):
-            yield ctx.immediate_transition(on_single_quote(c, ctx, is_field_name))
+            yield on_single_quote(c, ctx, is_field_name)
         else:
+            ctx = ctx.derive_unicode(quoted_text=True)
             yield on_other(c, ctx, is_field_name)
     return single_quote_handler
 
 
 _two_single_quotes_handler = _generate_single_quote_handler(
-    _long_string_handler,
+    lambda c, ctx, is_field_name: ctx.derive_unicode(quoted_text=True).immediate_transition(_long_string_handler(c, ctx, is_field_name)),
     lambda c, ctx, is_field_name: ctx.derive_pending_symbol().immediate_transition(ctx.whence)  # Empty symbol.
 )
-_string_or_symbol_handler = _generate_single_quote_handler(
-    _two_single_quotes_handler,
+_long_string_or_symbol_handler = _generate_single_quote_handler(
+    lambda c, ctx, is_field_name: ctx.immediate_transition(_two_single_quotes_handler(c, ctx, is_field_name)),
     lambda c, ctx, is_field_name: ctx.immediate_transition(_quoted_symbol_handler(c, ctx, is_field_name))
 )
 
@@ -1086,7 +1114,7 @@ def _struct_or_lob_handler(c, ctx):
 def _lob_start_handler(c, ctx):
     assert c == _OPEN_BRACE
     c, self = yield
-    trans = (Transition(None, self), None)
+    trans = ctx.immediate_transition(self)
     quotes = 0
     while True:
         if c in _WHITESPACE:
@@ -1112,14 +1140,14 @@ def _generate_lob_end_handler(ion_type, action, validate=lambda c, ctx, action_r
     assert ion_type is IonType.BLOB or ion_type is IonType.CLOB
 
     @coroutine
-    def lob_end_handler(c, ctx):
+    def lob_end_handler(c, ctx, is_self_delimited=False):
         val = ctx.value
         prev = c
         action_res = None
         if c != _CLOSE_BRACE and c not in _WHITESPACE:
-            action_res = action(c, ctx, prev, action_res)
+            action_res = action(c, ctx, prev, is_self_delimited, action_res, True)
         c, self = yield
-        trans = (Transition(None, self), None)
+        trans = ctx.immediate_transition(self)
         while True:
             if c in _WHITESPACE:
                 if prev == _CLOSE_BRACE:
@@ -1129,7 +1157,7 @@ def _generate_lob_end_handler(ion_type, action, validate=lambda c, ctx, action_r
                     validate(c, ctx, action_res)
                     break
             else:
-                action_res = action(c, ctx, prev, action_res)
+                action_res = action(c, ctx, prev, is_self_delimited, action_res, False)
             prev = c
             c, _ = yield trans
         yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, val, trans_cls=_SelfDelimitingTransition)
@@ -1142,7 +1170,8 @@ def _generate_blob_end_handler():
             return 0, 0
         return res
 
-    def action(c, ctx, prev, res):
+    def action(c, ctx, prev, is_self_delimited, res, is_first):
+        assert not is_self_delimited
         num_digits, num_pads = expand_res(res)
         if c in _BASE64_DIGITS:
             if prev == _CLOSE_BRACE or prev == _BASE64_PAD:
@@ -1166,10 +1195,21 @@ def _generate_blob_end_handler():
     return _generate_lob_end_handler(IonType.BLOB, action, validate)
 
 _blob_end_handler = _generate_blob_end_handler()
-_clob_end_handler = _generate_lob_end_handler(IonType.CLOB, lambda c, ctx, prev, action_res: _illegal_character(c, ctx))
 
 
-_single_quoted_field_name_handler = partial(_string_or_symbol_handler, is_field_name=True)
+def _generate_clob_end_handler():
+    def action(c, ctx, prev, is_self_delimited, res, is_first):
+        if is_first and is_self_delimited and c == _DOUBLE_QUOTE:
+            assert c is prev
+            return res
+        _illegal_character(c, ctx)
+
+    return _generate_lob_end_handler(IonType.CLOB, action)
+
+_clob_end_handler = _generate_clob_end_handler()
+
+
+_single_quoted_field_name_handler = partial(_long_string_or_symbol_handler, is_field_name=True)
 _double_quoted_field_name_handler = partial(_short_string_handler, is_field_name=True)
 _unquoted_field_name_handler = partial(_symbol_or_keyword_handler, is_field_name=True)
 
@@ -1269,7 +1309,7 @@ _VALUE_START_TABLE = _whitelist(
             _OPEN_BRACE: _struct_or_lob_handler,
             _OPEN_PAREN: _sexp_handler,
             _OPEN_BRACKET: _list_handler,
-            _SINGLE_QUOTE: _string_or_symbol_handler,
+            _SINGLE_QUOTE: _long_string_or_symbol_handler,
             _DOUBLE_QUOTE: _short_string_handler,
         },
         (_DIGITS[1:], _number_or_timestamp_handler)
@@ -1356,9 +1396,11 @@ def _container_handler(c, ctx):
                         child_context = child_context.derive_field_name()
                         c = None
                     else:
-                        cp_trans, cp = ctx.next_code_point(self, complete)
-                        yield cp_trans
-                        c = cp.code_point
+                        assert not ctx.quoted_text
+                        if len(queue) == 0:
+                            yield ctx.read_data_event(self,
+                                                      complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+                        c = queue.read_byte()
                         if c == _COLON:
                             child_context = child_context.derive_annotation()
                             c = None  # forces another character to be read safely
@@ -1383,6 +1425,7 @@ def _container_handler(c, ctx):
                 else:
                     handler = _VALUE_START_TABLE[c](c, child_context)  # Initialize the new handler
             container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
+            quoted_start = c == _DOUBLE_QUOTE  or c == _SINGLE_QUOTE
             read_next = True
             complete = False
             while True:
@@ -1392,9 +1435,16 @@ def _container_handler(c, ctx):
                     c = None
                     container_start = False
                 else:
-                    cp_trans, cp = ctx.next_code_point(self, complete)
-                    yield cp_trans
-                    c = cp.code_point
+                    if child_context.quoted_text or quoted_start:
+                        quoted_start = False
+                        cp_trans, c = child_context.next_code_point(self, complete)
+                        if cp_trans is not None:
+                            yield cp_trans
+                            c = c.code_point
+                    else:
+                        if len(queue) == 0:
+                            yield ctx.read_data_event(self)
+                        c = queue.read_byte()
                 trans, child_context = handler.send((c, handler))
                 next_transition = None
                 if not hasattr(trans, 'event'):
@@ -1419,9 +1469,11 @@ def _container_handler(c, ctx):
                     complete = ctx.depth == 0
                     if end_container or isinstance(trans, _SelfDelimitingTransition):
                         # The end of the value has been reached, and c needs to be updated
-                        cp_trans, cp = ctx.next_code_point(self, complete)
-                        yield cp_trans
-                        c = cp.code_point
+                        assert not ctx.quoted_text
+                        if len(queue) == 0:
+                            yield ctx.read_data_event(self,
+                                                      complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+                        c = queue.read_byte()
                     read_next = False
                     delimiter_required = ctx.container.is_delimited
                     if next_transition is None:
@@ -1430,24 +1482,26 @@ def _container_handler(c, ctx):
                         trans = next_transition
                 elif self is trans.delegate:
                     assert next_transition is None
-                    in_comment = isinstance(trans, _SelfDelimitingTransition)
+                    self_delimiting = isinstance(trans, _SelfDelimitingTransition)
                     if is_field_name:
-                        if c == _COLON or not (c == _SLASH and in_comment):
+                        if c == _COLON or not self_delimiting:
                             read_next = False
                             break
                     elif has_pending_symbol():
-                        if not in_comment:
+                        if not self_delimiting:
                             read_next = False
                             break
-                    elif in_comment:
+                    elif self_delimiting:
                         # There isn't a pending field name or pending annotations. If this is at the top level,
                         # it may end the stream.
                         complete = ctx.depth == 0
                     # This happens at the end of a comment within this container, or when a symbol token has been
                     # found. In both cases, an event should not be emitted. Read the next character and continue.
-                    cp_trans, cp = ctx.next_code_point(self, complete)
-                    yield cp_trans
-                    c = cp.code_point
+                    #assert not ctx.quoted_text
+                    if len(queue) == 0:
+                        yield ctx.read_data_event(self,
+                                                  complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+                    c = queue.read_byte()
                     read_next = False
                     break
                 # This is an immediate transition to a handler (may be the same one) for the current token.
@@ -1456,9 +1510,10 @@ def _container_handler(c, ctx):
                 # This will cause the next loop to fall through to the else branch below to ask for more input.
                 c = None
         else:
-            cp_trans, cp = ctx.next_code_point(self, complete)
-            yield cp_trans
-            c = cp.code_point
+            assert not ctx.quoted_text
+            if len(queue) == 0:
+                yield ctx.read_data_event(self, complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+            c = queue.read_byte()
 
 
 @coroutine
@@ -1512,7 +1567,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
     code_point, surrogates = (None, ())
     if cp_pair is not None:
         code_point, surrogates = cp_pair
-    if code_point == _BACKSLASH:  # TODO and escapes allowed
+    if code_point == _BACKSLASH:
         escape_sequence = b'' + six.int2byte(_BACKSLASH)
         num_digits = None
         while True:
@@ -1526,7 +1581,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
                     num_digits = 6  # 4-digit unicode escapes
                 elif code_point == _o(b'U'):
                     num_digits = 10  # 8-digit unicode escapes
-                elif code_point in _COMMON_ESCAPES:
+                elif code_point in _COMMON_ESCAPES:  # TODO verbatim newlines (e.g. \n) and \r\n
                     if code_point == _SLASH or code_point == _QUESTION_MARK:
                         escape_sequence = b''  # Drop the \. Python does not recognize these as escapes.
                     escape_sequence += six.int2byte(code_point)

@@ -287,6 +287,7 @@ _GOOD = (
     (b'(\'foo\')',) + _good_sexp(e_symbol(u'foo')),
     (b'[\'foo\']',) + _good_list(e_symbol(u'foo')),
     (b'/*foo*///bar\n/*baz*/',),
+    (b'/*\\n*///\\u3000\n',),
     (b'\'\'::123 ', e_int(value=b'123', annotations=(u'',))),
     (b'{foo:zar::[], bar: (), baz:{}}',) + _good_struct(
         e_start_list(field_name=u'foo', annotations=(u'zar',)), e_end_list(),
@@ -364,15 +365,31 @@ _UNICODE_SURROGATES = (
 )
 
 _BAD_ESCAPES_FROM_UNICODE = (
-    # TODO escapes outside of quoted text
     (u'"\\g"',),
     (u'\'\\q\'',),
+    (u'\\t',),
+    (u'"abc"\\t', e_string(u'abc')),
+    (u'\'abc\'\\n', e_symbol(u'abc')),
+    (u'\'abc\'\\xf6', e_symbol(u'abc')),
+    (u"'''abc'''\\U0001f4a9", e_string(u'abc')),
+    (u"''\\u3000", e_symbol(u'')),
+    (u"{{'''abc'''\\n}}",),
+    (u'{{"abc"\\n}}',),
+    (u'{\'foo\'\\v:bar}', e_start_struct()),
+    (u'{\'\'\'foo\'\'\'\\xf6:bar}', e_start_struct()),
 )
 
 _BAD_ESCAPES_FROM_BYTES = (
-    # TODO
     (br'"\g"',),
     (br'\'\q\'',),
+    (b'\\t',),
+    (b'"abc"\\t', e_string(u'abc')),
+    (b'\'abc\'\\n', e_symbol(u'abc')),
+    (b'\'abc\'\\xf6', e_symbol(u'abc')),
+    (b"'''abc'''\\U0001f4a9", e_string(u'abc')),
+    (b"''\\u3000", e_symbol(u'')),
+    (b"{{'''abc'''\\n}}",),
+    (b'{{"abc"\\n}}',),
 )
 
 
