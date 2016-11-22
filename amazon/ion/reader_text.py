@@ -1426,7 +1426,6 @@ def _container_handler(c, ctx):
                     handler = _VALUE_START_TABLE[c](c, child_context)  # Initialize the new handler
             container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
             quoted_start = c == _DOUBLE_QUOTE  or c == _SINGLE_QUOTE
-            read_next = True
             complete = False
             while True:
                 # Loop over all characters in the current token. A token is either a non-symbol value or a pending
@@ -1474,7 +1473,6 @@ def _container_handler(c, ctx):
                             yield ctx.read_data_event(self,
                                                       complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
                         c = queue.read_byte()
-                    read_next = False
                     delimiter_required = ctx.container.is_delimited
                     if next_transition is None:
                         break
@@ -1485,11 +1483,9 @@ def _container_handler(c, ctx):
                     self_delimiting = isinstance(trans, _SelfDelimitingTransition)
                     if is_field_name:
                         if c == _COLON or not self_delimiting:
-                            read_next = False
                             break
                     elif has_pending_symbol():
                         if not self_delimiting:
-                            read_next = False
                             break
                     elif self_delimiting:
                         # There isn't a pending field name or pending annotations. If this is at the top level,
@@ -1497,18 +1493,13 @@ def _container_handler(c, ctx):
                         complete = ctx.depth == 0
                     # This happens at the end of a comment within this container, or when a symbol token has been
                     # found. In both cases, an event should not be emitted. Read the next character and continue.
-                    #assert not ctx.quoted_text
                     if len(queue) == 0:
                         yield ctx.read_data_event(self,
                                                   complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
                     c = queue.read_byte()
-                    read_next = False
                     break
                 # This is an immediate transition to a handler (may be the same one) for the current token.
                 handler = trans.delegate
-            if read_next and len(queue) == 0:
-                # This will cause the next loop to fall through to the else branch below to ask for more input.
-                c = None
         else:
             assert not ctx.quoted_text
             if len(queue) == 0:
