@@ -343,6 +343,14 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'\'\\?\\f\'::\'\\xf6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (u"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (u"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
+    (u'"\\\n"', e_string(u'')),
+    (u'"\\\r\n"', e_string(u'')),
+    (u'"\\\r"', e_string(u'')),
+    (u'"\\\n\r"', e_string(u'\r')),
+    (u'"\\\r\\xf6"', e_string(u'\xf6')),
+    (u'"\\\rabc"', e_string(u'abc')),
+    (u"'\\\r\n'::42 ", e_int(b'42', annotations=(u'',))),
+    (u"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(u'bar', field_name=u'foo\r'))
 )
 
 _GOOD_ESCAPES_FROM_BYTES = (
@@ -355,6 +363,14 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (b'\'\\?\\f\'::\'\\xf6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (b"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (b"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
+    (b'"\\\n"', e_string(u'')),
+    (b'"\\\r\n"', e_string(u'')),
+    (b'"\\\r"', e_string(u'')),
+    (b'"\\\n\r"', e_string(u'\r')),
+    (b'"\\\r\\xf6"', e_string(u'\xf6')),
+    (b'"\\\rabc"', e_string(u'abc')),
+    (b"'\\\r\n'::42 ", e_int(b'42', annotations=(u'',))),
+    (b"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(u'bar', field_name=u'foo\r'))
 )
 
 _INCOMPLETE_ESCAPES = (

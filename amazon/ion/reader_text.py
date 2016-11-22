@@ -22,7 +22,6 @@ from functools import partial
 
 import collections
 import six
-import sys
 
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
     IonEventType
@@ -84,7 +83,8 @@ _BASE64_DIGITS = _LETTERS + _DIGITS + _seq(b'+/')
 _IDENTIFIER_STARTS = _LETTERS + _seq(b'$_')
 _IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
 _OPERATORS = _seq(b'!#%&*+-./;<=>?@^`|~')
-_COMMON_ESCAPES = _seq(b'abtnfrv?0\'"/\\')  # TODO CR+LF?
+_COMMON_ESCAPES = _seq(b'abtnfrv?0\'"/\\')
+_NEWLINES = _seq(b'\r\n')
 
 _UNDERSCORE = _o(b'_')
 _DOT = _o(b'.')
@@ -93,6 +93,7 @@ _COLON = _o(b':')
 _SLASH = _o(b'/')
 _ASTERISK = _o(b'*')
 _BACKSLASH = _o(b'\\')
+_CARRIAGE_RETURN = _o(b'\r')
 _NEWLINE = _o(b'\n')
 _DOUBLE_QUOTE = _o(b'"')
 _SINGLE_QUOTE = _o(b'\'')
@@ -1550,60 +1551,73 @@ class _CodePointHolder:
 def _next_code_point_handler(whence, ctx, out, stream_event):
     data_event, self = yield
     queue = ctx.queue
-    if len(queue) == 0:
-        yield ctx.read_data_event(self, stream_event=stream_event)
-    queue_iter = iter(queue)
-    code_point_generator = next_code_point(queue, queue_iter, yield_char=True)
-    cp_pair = next(code_point_generator)
-    code_point, surrogates = (None, ())
-    if cp_pair is not None:
-        code_point, surrogates = cp_pair
-    if code_point == _BACKSLASH:
-        escape_sequence = b'' + six.int2byte(_BACKSLASH)
-        num_digits = None
-        while True:
-            if len(queue) == 0:
-                yield ctx.read_data_event(self, ION_STREAM_INCOMPLETE_EVENT)
-            code_point = next(queue_iter)
-            if six.indexbytes(escape_sequence, -1) == _BACKSLASH:
-                if code_point == _o(b'x'):
-                    num_digits = 4  # 2-digit hex escapes
-                elif code_point == _o(b'u'):
-                    num_digits = 6  # 4-digit unicode escapes
-                elif code_point == _o(b'U'):
-                    num_digits = 10  # 8-digit unicode escapes
-                elif code_point in _COMMON_ESCAPES:  # TODO verbatim newlines (e.g. \n) and \r\n
-                    if code_point == _SLASH or code_point == _QUESTION_MARK:
-                        escape_sequence = b''  # Drop the \. Python does not recognize these as escapes.
-                    escape_sequence += six.int2byte(code_point)
-                    break
-                else:
-                    # This is a backslash followed by an invalid escape character. This is illegal.
-                    _illegal_character(code_point, ctx, 'Invalid escape sequence \\%s.' % (_c(code_point),))
-                escape_sequence += six.int2byte(code_point)
-            else:
-                escape_sequence += six.int2byte(code_point)
-                if len(escape_sequence) == num_digits:
-                    break
-        escape_sequence = escape_sequence.decode('unicode-escape')
-        cp_iter = unicode_iter(escape_sequence)
-        out.code_point = CodePoint(next(cp_iter))
-        out.code_point.char = escape_sequence
-        out.code_point.is_escaped = True
-        yield Transition(None, whence)
-    while code_point is None:
-        yield ctx.read_data_event(self)
+    while True:
+        if len(queue) == 0:
+            yield ctx.read_data_event(self, stream_event=stream_event)
+        queue_iter = iter(queue)
+        code_point_generator = next_code_point(queue, queue_iter, yield_char=True)
         cp_pair = next(code_point_generator)
+        code_point, surrogates = (None, ())
         if cp_pair is not None:
             code_point, surrogates = cp_pair
-    if len(surrogates) > 1:
-        out.code_point = CodePoint(code_point)
-        out.code_point.char = u''
-        for surrogate in surrogates:
-            out.code_point.char += six.unichr(surrogate)
-    else:
-        out.code_point = code_point
-    yield Transition(None, whence)
+        if code_point == _BACKSLASH:
+            escape_sequence = b'' + six.int2byte(_BACKSLASH)
+            num_digits = None
+            escaped_newline = False
+            while True:
+                if len(queue) == 0:
+                    yield ctx.read_data_event(self, ION_STREAM_INCOMPLETE_EVENT)
+                code_point = next(queue_iter)
+                if six.indexbytes(escape_sequence, -1) == _BACKSLASH:
+                    if code_point == _o(b'x'):
+                        num_digits = 4  # 2-digit hex escapes
+                    elif code_point == _o(b'u'):
+                        num_digits = 6  # 4-digit unicode escapes
+                    elif code_point == _o(b'U'):
+                        num_digits = 10  # 8-digit unicode escapes
+                    elif code_point in _COMMON_ESCAPES:
+                        if code_point == _SLASH or code_point == _QUESTION_MARK:
+                            escape_sequence = b''  # Drop the \. Python does not recognize these as escapes.
+                        escape_sequence += six.int2byte(code_point)
+                        break
+                    elif code_point in _NEWLINES:
+                        escaped_newline = True
+                        if code_point == _CARRIAGE_RETURN:
+                            if len(queue) == 0:
+                                yield ctx.read_data_event(self, ION_STREAM_INCOMPLETE_EVENT)
+                            code_point = next(queue_iter)
+                            if code_point != _NEWLINE:
+                                queue.unread(code_point)
+                        break
+                    else:
+                        # This is a backslash followed by an invalid escape character. This is illegal.
+                        _illegal_character(code_point, ctx, 'Invalid escape sequence \\%s.' % (_c(code_point),))
+                    escape_sequence += six.int2byte(code_point)
+                else:
+                    escape_sequence += six.int2byte(code_point)
+                    if len(escape_sequence) == num_digits:
+                        break
+            if escaped_newline:
+                continue
+            escape_sequence = escape_sequence.decode('unicode-escape')
+            cp_iter = unicode_iter(escape_sequence)
+            out.code_point = CodePoint(next(cp_iter))
+            out.code_point.char = escape_sequence
+            out.code_point.is_escaped = True
+            yield Transition(None, whence)
+        while code_point is None:
+            yield ctx.read_data_event(self)
+            cp_pair = next(code_point_generator)
+            if cp_pair is not None:
+                code_point, surrogates = cp_pair
+        if len(surrogates) > 1:
+            out.code_point = CodePoint(code_point)
+            out.code_point.char = u''
+            for surrogate in surrogates:
+                out.code_point.char += six.unichr(surrogate)
+        else:
+            out.code_point = code_point
+        yield Transition(None, whence)
 
 
 def reader(queue=None, is_unicode=False):
