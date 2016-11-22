@@ -383,6 +383,10 @@ _INCOMPLETE_ESCAPES = (
         (e_read(u'{"\\U0001'), e_start_struct()), (NEXT, INC), (e_read(u'f4a9"'), INC),
         (e_read(u':bar}'), e_symbol(u'bar', field_name=u'\U0001f4a9')), (NEXT, e_end_struct()), (NEXT, END)
     ],
+    [
+        (e_read(u"'''\\\r"), INC), (e_read(u"\n'''//\n"), INC), (e_read(u"'''abc'''42 "), e_string(u'abc')),
+        (NEXT, e_int(b'42')), (NEXT, END)
+    ],
 )
 
 _UCS2 = sys.maxunicode < 0x10ffff
