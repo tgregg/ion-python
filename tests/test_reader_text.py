@@ -24,7 +24,7 @@ import sys
 
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
-from amazon.ion.reader_text import reader
+from amazon.ion.reader_text import reader, _TimestampTokens
 from amazon.ion.util import coroutine
 from tests import listify, parametrize
 from tests.event_aliases import *
@@ -32,6 +32,7 @@ from tests.reader_util import ReaderParameter, reader_scaffold, all_top_level_as
 
 _b = bytearray
 _P = ReaderParameter
+_tt = _TimestampTokens
 
 _BAD = (
     (b'+1',),
@@ -455,6 +456,7 @@ _UNSPACED_SEXPS = (
     (b'(-1.23 .)',) + _good_sexp(e_decimal(b'-1.23'), e_symbol(u'.')),
     (b'(1.)',) + _good_sexp(e_decimal(b'1.')),
     (b'(1. .1)',) + _good_sexp(e_decimal(b'1.'), e_symbol(u'.'), e_int(b'1')),
+    (b'(2001-01-01/**/a)',) + _good_sexp(e_timestamp(_tt(fields=[b'2001', b'01', b'01'])), e_symbol(u'a')),
     (b'(nul)',) + _good_sexp(e_symbol(u'nul')),
     (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=u'%-', annotations=(u'foo',)), e_symbol(u'bar')),
     (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(u'.'), e_symbol(u'False'), e_symbol(u'+')),
@@ -539,23 +541,23 @@ _GOOD_SCALARS = (
     (b'-0d1', e_decimal(_b(b'-0d1'))),
 
     (b'null.timestamp', e_timestamp()),
-    (b'2007-01T', e_timestamp(_b(b'2007-01T'))),
-    (b'2007T', e_timestamp(_b(b'2007T'))),
-    (b'2007-01-01', e_timestamp(_b(b'2007-01-01'))),
-    (b'2000-01-01T00:00:00.000Z', e_timestamp(_b(b'2000-01-01T00:00:00.000Z'))),
-    (b'2000-01-01T00:00:00.000-00:00', e_timestamp(_b(b'2000-01-01T00:00:00.000-00:00'))),
-    (b'2007-02-23T00:00+00:00', e_timestamp(_b(b'2007-02-23T00:00+00:00'))),
-    (b'2007-01-01T', e_timestamp(_b(b'2007-01-01T'))),
-    (b'2000-01-01T00:00:00Z', e_timestamp(_b(b'2000-01-01T00:00:00Z'))),
-    (b'2007-02-23T00:00:00-00:00', e_timestamp(_b(b'2007-02-23T00:00:00-00:00'))),
-    (b'2007-02-23T12:14:33.079-08:00', e_timestamp(_b(b'2007-02-23T12:14:33.079-08:00'))),
-    (b'2007-02-23T20:14:33.079Z', e_timestamp(_b(b'2007-02-23T20:14:33.079Z'))),
-    (b'2007-02-23T20:14:33.079+00:00', e_timestamp(_b(b'2007-02-23T20:14:33.079+00:00'))),
-    (b'0001T', e_timestamp(_b(b'0001T'))),
-    (b'0007-01T', e_timestamp(_b(b'0007-01T'))),
-    (b'0007-01-01T', e_timestamp(_b(b'0007-01-01T'))),
-    (b'0007-01-01', e_timestamp(_b(b'0007-01-01'))),
-    (b'0000-01-01T00:00:00Z', e_timestamp(_b(b'0000-01-01T00:00:00Z'))),
+    (b'2007-01T', e_timestamp(_tt(fields=[b'2007', b'01']))),
+    (b'2007T', e_timestamp(_tt(fields=[b'2007']))),
+    (b'2007-01-01', e_timestamp(_tt(fields=[b'2007', b'01', b'01']))),
+    (b'2000-01-01T00:00:00.000Z', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00', b'000']))),
+    (b'2000-01-01T00:00:00.000-00:00', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00', b'000', b'-00', b'00']))),
+    (b'2007-02-23T00:00+00:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', None, None, b'00', b'00']))),
+    (b'2007-01-01T', e_timestamp(_tt(fields=[b'2007', b'01', b'01']))),
+    (b'2000-01-01T00:00:00Z', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00']))),
+    (b'2007-02-23T00:00:00-00:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', b'00', None, b'-00', b'00']))),
+    (b'2007-02-23T12:14:33.079-08:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'12', b'14', b'33', b'079', b'-08', b'00']))),
+    (b'2007-02-23T20:14:33.079Z', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'20', b'14', b'33', b'079']))),
+    (b'2007-02-23T20:14:33.079+00:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'20', b'14', b'33', b'079', b'00', b'00']))),
+    (b'0001T', e_timestamp(_tt(fields=[b'0001']))),
+    (b'0007-01T', e_timestamp(_tt(fields=[b'0007', b'01']))),
+    (b'0007-01-01T', e_timestamp(_tt(fields=[b'0007', b'01', b'01']))),
+    (b'0007-01-01', e_timestamp(_tt(fields=[b'0007', b'01', b'01']))),
+    (b'0001-01-01T00:00:00Z', e_timestamp(_tt(fields=[b'0001', b'01', b'01', b'00', b'00', b'00']))),
 
     (b'null.symbol', e_symbol()),
     (b'nul', e_symbol(u'nul')),  # See the logic in the event generators that forces these to emit an event.

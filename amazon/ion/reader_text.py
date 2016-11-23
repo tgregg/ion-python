@@ -303,7 +303,7 @@ class _HandlerContext(record(
         return Transition(None, _next_code_point_handler(whence, self, out, stream_event)), out
 
     def derive_unicode(self, quoted_text=False):
-        if isinstance(self.value, CodePointArray):  # TODO see if this can be prevented
+        if isinstance(self.value, CodePointArray):
             assert self.quoted_text == quoted_text
             return self
         return _HandlerContext(
@@ -495,7 +495,7 @@ def _number_slash_end_handler(c, ctx, event):
     next_ctx = ctx.derive_child_context(ctx.whence)
     comment = _comment_handler(_SLASH, next_ctx, next_ctx.whence)
     comment.send((c, comment))
-    # If the previous line returns without error, it's a valid comment and number int may be emitted.
+    # If the previous line returns without error, it's a valid comment and the number may be emitted.
     yield [event[0], next_ctx.immediate_transition(comment)[0]], next_ctx
 
 
@@ -611,38 +611,72 @@ def _timestamp_zero_start_handler(c, ctx):
         c, _ = yield trans
 
 
+class _TimestampState(Enum):
+    YEAR = 0
+    MONTH = 1
+    DAY = 2
+    HOUR = 3
+    MINUTE = 4
+    SECOND = 5
+    FRACTIONAL = 6
+    OFF_HOUR = 7
+    OFF_MINUTE = 8
+
+
+class _TimestampTokens:
+    def __init__(self, year=None, fields=None):
+        fld = []
+        for i in iter(_TimestampState):
+            fld.append(None)
+        if fields is not None:
+            fld[0:len(fields)] = fields
+        if year is not None:
+            fld[_TimestampState.YEAR] = year
+        self._fields = fld
+
+    def transition(self, state):
+        val = bytearray()
+        self._fields[state] = val
+        return val
+
+    def __eq__(self, other):
+        return isinstance(other, _TimestampTokens) and self._fields == other._fields
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __repr__(self):
+        out = b'TimestampTokens('
+        for i in iter(_TimestampState):
+            val = self._fields[i]
+            if val:
+                out += b'%s=%s,' % (i.name, self._fields[i])
+        out += b')'
+        return out
+
+    __str__ = __repr__
+
+
 @coroutine
 def _timestamp_handler(c, ctx):
-    class State(Enum):
-        YEAR = 0
-        MONTH = 1
-        DAY = 2
-        HOUR = 3
-        MINUTE = 4
-        SECOND = 5
-        FRACTIONAL = 6
-        OFF_HOUR = 7
-        OFF_MINUTE = 8
-
     assert c in _TIMESTAMP_YEAR_DELIMITERS
     ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
-    if len(ctx.value) != 4:  # or should this be left to the parser?
+    if len(ctx.value) != 4:
         _illegal_character(c, ctx, 'Timestamp year is %d digits; expected 4.' % (len(ctx.value),))
-    val = ctx.value
-    # TODO put the components into a Timestamp as strings, so the parser doesn't have to retokenize the components.
-    val.append(c)
     prev = c
     c, self = yield
     trans = ctx.immediate_transition(self)
-    state = State.YEAR
+    state = _TimestampState.YEAR
     nxt = _DIGITS
+    tokens = _TimestampTokens(ctx.value)
+    val = None
     if prev == _T:
         nxt += _VALUE_TERMINATORS
     while True:
         if c not in nxt:
             _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_c(x) for x in nxt], state))
         if c in _VALUE_TERMINATORS:
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, tokens)
             if c == _SLASH:
                 trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         else:
@@ -653,33 +687,37 @@ def _timestamp_handler(c, ctx):
             elif c in _TIMESTAMP_DELIMITERS:
                 nxt = _DIGITS
             elif c in _DIGITS:
-                if prev == _PLUS or (state > State.MONTH and prev == _HYPHEN):
-                    state = State.OFF_HOUR
+                if prev == _PLUS or (state > _TimestampState.MONTH and prev == _HYPHEN):
+                    state = _TimestampState.OFF_HOUR
+                    val = tokens.transition(state)
+                    if prev == _HYPHEN:
+                        val.append(prev)
                 elif prev in (_TIMESTAMP_DELIMITERS + (_T,)):
-                    state = State[state + 1]
+                    state = _TimestampState[state + 1]
+                    val = tokens.transition(state)
                 elif prev in _DIGITS:
-                    if state == State.MONTH:
+                    if state == _TimestampState.MONTH:
                         nxt = _TIMESTAMP_YEAR_DELIMITERS
-                    elif state == State.DAY:
+                    elif state == _TimestampState.DAY:
                         nxt = (_T,) + _VALUE_TERMINATORS
-                    elif state == State.HOUR:
+                    elif state == _TimestampState.HOUR:
                         nxt = (_COLON,)
-                    elif state == State.MINUTE:
+                    elif state == _TimestampState.MINUTE:
                         nxt = _TIMESTAMP_OFFSET_INDICATORS + (_COLON,)
-                    elif state == State.SECOND:
+                    elif state == _TimestampState.SECOND:
                         nxt = _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
-                    elif state == State.FRACTIONAL:
+                    elif state == _TimestampState.FRACTIONAL:
                         nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
-                    elif state == State.OFF_HOUR:
+                    elif state == _TimestampState.OFF_HOUR:
                         nxt = (_COLON,) + _VALUE_TERMINATORS
-                    elif state == State.OFF_MINUTE:
+                    elif state == _TimestampState.OFF_MINUTE:
                         nxt = _VALUE_TERMINATORS
                     else:
                         raise ValueError('Unknown timestamp state %r.' % (state,))
                 else:
                     # Reaching this branch would be indicative of a programming error within this state machine.
                     raise ValueError('Digit following %s in timestamp state %r.' % (_c(prev), state))
-            val.append(c)
+                val.append(c)
         prev = c
         c, _ = yield trans
 
