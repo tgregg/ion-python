@@ -24,7 +24,7 @@ import sys
 
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
-from amazon.ion.reader_text import reader, _TimestampTokens
+from amazon.ion.reader_text import reader, _TimestampTokens, _POS_INF, _NEG_INF, _NAN
 from amazon.ion.util import coroutine
 from tests import listify, parametrize
 from tests.event_aliases import *
@@ -265,7 +265,7 @@ _GOOD = (
     (b'null()', e_null()) + _good_sexp(),
     (b'tru{}', e_symbol(u'tru')) + _good_struct(),
     (b'{{"foo"}}42{{}}', e_clob(u'foo'), e_int(b'42'), e_blob(b'')),
-    (b'+inf"bar"', e_float(b'+inf'), e_string(u'bar')),
+    (b'+inf"bar"', e_float(_POS_INF), e_string(u'bar')),
     (b'foo\'bar\'"baz"', e_symbol(u'foo'), e_symbol(u'bar'), e_string(u'baz')),
     (b'\'\'\'foo\'\'\'\'\'123 ', e_string(u'foo'), e_symbol(u''), e_int(b'123')),
     (b'\'\'\'foo\'\'\'\'abc\'123 ', e_string(u'foo'), e_symbol(u'abc'), e_int(b'123')),
@@ -464,27 +464,27 @@ _UNSPACED_SEXPS = (
     (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=u'%-', annotations=(u'foo',)), e_symbol(u'bar')),
     (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(u'.'), e_symbol(u'False'), e_symbol(u'+')),
     (b'(false)',) + _good_sexp(e_bool(False)),
-    (b'(-inf)',) + _good_sexp(e_float(b'-inf')),
-    (b'(+inf)',) + _good_sexp(e_float(b'+inf')),
-    (b'(nan)',) + _good_sexp(e_float(b'nan')),
-    (b'(-inf+inf)',) + _good_sexp(e_float(b'-inf'), e_float(b'+inf')),
-    (b'(+inf\'foo\')',) + _good_sexp(e_float(b'+inf'), e_symbol(u'foo')),
-    (b'(-inf\'foo\'::bar)',) + _good_sexp(e_float(b'-inf'), e_symbol(value=u'bar', annotations=(u'foo',))),
+    (b'(-inf)',) + _good_sexp(e_float(_NEG_INF)),
+    (b'(+inf)',) + _good_sexp(e_float(_POS_INF)),
+    (b'(nan)',) + _good_sexp(e_float(_NAN)),
+    (b'(-inf+inf)',) + _good_sexp(e_float(_NEG_INF), e_float(_POS_INF)),
+    (b'(+inf\'foo\')',) + _good_sexp(e_float(_POS_INF), e_symbol(u'foo')),
+    (b'(-inf\'foo\'::bar)',) + _good_sexp(e_float(_NEG_INF), e_symbol(value=u'bar', annotations=(u'foo',))),
     # TODO the inf tests do not match ion-java's behavior. They should be reconciled. I believe this is more correct.
     (b'(- -inf-inf-in-infs-)',) + _good_sexp(
-        e_symbol(u'-'), e_float(b'-inf'), e_float(b'-inf'), e_symbol(u'-'),
+        e_symbol(u'-'), e_float(_NEG_INF), e_float(_NEG_INF), e_symbol(u'-'),
         e_symbol(u'in'), e_symbol(u'-'), e_symbol(u'infs'), e_symbol(u'-')
     ),
     (b'(+ +inf+inf+in+infs+)',) + _good_sexp(
-        e_symbol(u'+'), e_float(b'+inf'), e_float(b'+inf'), e_symbol(u'+'),
+        e_symbol(u'+'), e_float(_POS_INF), e_float(_POS_INF), e_symbol(u'+'),
         e_symbol(u'in'), e_symbol(u'+'), e_symbol(u'infs'), e_symbol(u'+')
     ),
     (b'(nan-nan+nan)',) + _good_sexp(
-        e_float(b'nan'), e_symbol(u'-'), e_float(b'nan'), e_symbol(u'+'),
-        e_float(b'nan')
+        e_float(_NAN), e_symbol(u'-'), e_float(_NAN), e_symbol(u'+'),
+        e_float(_NAN)
     ),
     (b'(nans-inf+na-)',) + _good_sexp(
-        e_symbol(u'nans'), e_float(b'-inf'), e_symbol(u'+'),
+        e_symbol(u'nans'), e_float(_NEG_INF), e_symbol(u'+'),
         e_symbol(u'na'), e_symbol(u'-')
     ),
     (b'({}()zar::[])',) + _good_sexp(
@@ -520,9 +520,9 @@ _GOOD_SCALARS = (
     (b'0.0e1', e_float(b'0.0e1')),
     (b'-0.0e-1', e_float(b'-0.0e-1')),
     (b'0.0E1', e_float(b'0.0E1')),
-    (b'-inf', e_float(b'-inf')),
-    (b'+inf', e_float(b'+inf')),
-    (b'nan', e_float(b'nan')),
+    (b'-inf', e_float(_NEG_INF)),
+    (b'+inf', e_float(_POS_INF)),
+    (b'nan', e_float(_NAN)),
 
     (b'null.decimal', e_decimal()),
     (b'0.0', e_decimal(b'0.0')),

@@ -875,6 +875,9 @@ def _typed_null_handler(c, ctx):
             done = i == length
         c, _ = yield trans
 
+_POS_INF = float('+inf')
+_NEG_INF = float('-inf')
+_NAN = float('nan')
 
 @coroutine
 def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
@@ -932,7 +935,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 return found, transition
             maybe_null, keyword_trans = check_keyword('null', _NULL_SEQUENCE.sequence, IonType.NULL, None, check_null_dot)
         if maybe_nan:
-            maybe_nan, keyword_trans = check_keyword('nan', _NAN_SEQUENCE, IonType.FLOAT, bytearray(b'nan'))  # TODO clunky; avoids the unicode
+            maybe_nan, keyword_trans = check_keyword('nan', _NAN_SEQUENCE, IonType.FLOAT, _NAN)
         elif maybe_true:
             maybe_true, keyword_trans = check_keyword('true', _TRUE_SEQUENCE, IonType.BOOL, True)
         elif maybe_false:
@@ -978,7 +981,7 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
                     maybe_inf = c == _INF_SEQUENCE[match_index]
                 else:
                     if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
-                        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, bytearray(six.int2byte(c_start) + b'inf'))
+                        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, c_start == _MINUS and _NEG_INF or _POS_INF)
                     else:
                         maybe_inf = False
             if maybe_inf:
