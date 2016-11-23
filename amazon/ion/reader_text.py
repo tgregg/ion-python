@@ -72,7 +72,7 @@ _DIGITS = _seq(b'0123456789')
 _BINARY_RADIX = _seq(b'Bb')
 _BINARY_DIGITS = _seq(b'01')
 _HEX_RADIX = _seq(b'Xx')
-_HEX_DIGITS = _DIGITS + _seq(b'abcdef')
+_HEX_DIGITS = _DIGITS + _seq(b'abcdefABCDEF')
 _DECIMAL_EXPS = _seq(b'Dd')
 _FLOAT_EXPS = _seq(b'Ee')
 _TIMESTAMP_YEAR_DELIMITERS = _seq(b'-T')
@@ -1632,6 +1632,9 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
                         _illegal_character(code_point, ctx, 'Invalid escape sequence \\%s.' % (_c(code_point),))
                     escape_sequence += six.int2byte(code_point)
                 else:
+                    if code_point not in _HEX_DIGITS:
+                        _illegal_character(code_point, ctx,
+                                           'Non-hex character %s found in unicode escape.' %(_c(code_point),))
                     escape_sequence += six.int2byte(code_point)
                     if len(escape_sequence) == num_digits:
                         break
