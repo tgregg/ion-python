@@ -237,7 +237,8 @@ class CodePointArray(collections.MutableSequence):
 
 
 class _HandlerContext(record(
-    'container', 'queue', 'field_name', 'annotations', 'depth', 'whence', 'value', 'ion_type', 'pending_symbol', ('quoted_text', False)
+    'container', 'queue', 'field_name', 'annotations', 'depth', 'whence',
+    'value', 'ion_type', 'pending_symbol', ('quoted_text', False)
 )):
     """A context for a handler co-routine.
 
@@ -933,7 +934,8 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
                         _illegal_character(c, ctx, "Illegal character in field name.")
                     transition = ctx.immediate_transition(_typed_null_handler(c, ctx))
                 return found, transition
-            maybe_null, keyword_trans = check_keyword('null', _NULL_SEQUENCE.sequence, IonType.NULL, None, check_null_dot)
+            maybe_null, keyword_trans = check_keyword('null', _NULL_SEQUENCE.sequence,
+                                                      IonType.NULL, None, check_null_dot)
         if maybe_nan:
             maybe_nan, keyword_trans = check_keyword('nan', _NAN_SEQUENCE, IonType.FLOAT, _NAN)
         elif maybe_true:
@@ -981,7 +983,9 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
                     maybe_inf = c == _INF_SEQUENCE[match_index]
                 else:
                     if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
-                        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.FLOAT, c_start == _MINUS and _NEG_INF or _POS_INF)
+                        yield ctx.event_transition(
+                            IonEvent, IonEventType.SCALAR, IonType.FLOAT, c_start == _MINUS and _NEG_INF or _POS_INF
+                        )
                     else:
                         maybe_inf = False
             if maybe_inf:
@@ -1112,14 +1116,21 @@ def _generate_short_string_handler():
 
     def after(c, ctx, is_field_name):
         ctx = ctx.derive_unquoted_text()
-        return ctx.immediate_transition(is_field_name and ctx.whence or _clob_end_handler(c, ctx, is_self_delimited=True), trans_cls=_SelfDelimitingTransition)
+        return ctx.immediate_transition(
+            is_field_name and ctx.whence or _clob_end_handler(c, ctx, is_self_delimited=True),
+            trans_cls=_SelfDelimitingTransition
+        )
 
     return _generate_quoted_text_handler(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, after, append_first=False,
                                          before=before, on_close=on_close)
 
 
 _short_string_handler = _generate_short_string_handler()
-_quoted_symbol_handler = _generate_quoted_text_handler(_SINGLE_QUOTE, lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)), partial(_symbol_token_end, trans_cls=_SelfDelimitingTransition))
+_quoted_symbol_handler = _generate_quoted_text_handler(
+    _SINGLE_QUOTE,
+    lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)),
+    partial(_symbol_token_end, trans_cls=_SelfDelimitingTransition)
+)
 
 
 def _generate_single_quote_handler(on_single_quote, on_other):
@@ -1136,7 +1147,9 @@ def _generate_single_quote_handler(on_single_quote, on_other):
 
 
 _two_single_quotes_handler = _generate_single_quote_handler(
-    lambda c, ctx, is_field_name: ctx.derive_unicode(quoted_text=True).immediate_transition(_long_string_handler(c, ctx, is_field_name)),
+    lambda c, ctx, is_field_name: ctx.derive_unicode(quoted_text=True).immediate_transition(
+        _long_string_handler(c, ctx, is_field_name)
+    ),
     lambda c, ctx, is_field_name: ctx.derive_pending_symbol().immediate_transition(ctx.whence)  # Empty symbol.
 )
 _long_string_or_symbol_handler = _generate_single_quote_handler(
@@ -1500,7 +1513,8 @@ def _container_handler(c, ctx):
                     # Hence, a new character should not be read; it should be provided to the handler for the next
                     # child context.
                     yield trans
-                    end_container = trans.event.ion_type.is_container and trans.event.event_type is not IonEventType.SCALAR
+                    end_container = trans.event.ion_type.is_container and \
+                                    trans.event.event_type is not IonEventType.SCALAR
                     if end_container:
                         assert next_transition is None
                         yield Transition(

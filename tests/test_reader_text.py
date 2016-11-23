@@ -317,7 +317,9 @@ _GOOD_UNICODE = (
     (u'{foo:"b\xf6\U0001f4a9r"}',) + _good_struct(e_string(u'b\xf6\U0001f4a9r', field_name=u'foo')),
     (u'{\'b\xf6\U0001f4a9r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
     (u'{"b\xf6\U0001f4a9r\":"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
-    (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'\xf6\U0001f4a9r')),
+    (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\':"foo"}',) + _good_struct(
+        e_string(u'foo', field_name=u'\xf6\U0001f4a9r')
+    ),
     (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(u'b\xf6\U0001f4a9r',))),
     (u'"\t\n\r\v\f\a\b\0\'"', e_string(u'\t\n\r\v\f\a\b\0\''))
 )
@@ -339,7 +341,9 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'["\\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
     (u'"\\t\\n"\'\\\'\'"\\0"', e_string(u'\t\n'), e_symbol(u'\''), e_string(u'\0')),
     (u'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
-    (u'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))),
+    (u'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(
+        e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))
+    ),
     (u'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (u"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (u"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
@@ -359,7 +363,9 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (br'["\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
     (b'"\\t\\n"\'\\\'\'"\\0"', e_string(u'\t\n'), e_symbol(u'\''), e_string(u'\0')),
     (b'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
-    (b'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))),
+    (b'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(
+        e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))
+    ),
     (b'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (b"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (b"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
@@ -548,14 +554,29 @@ _GOOD_SCALARS = (
     (b'2007T', e_timestamp(_tt(fields=[b'2007']))),
     (b'2007-01-01', e_timestamp(_tt(fields=[b'2007', b'01', b'01']))),
     (b'2000-01-01T00:00:00.000Z', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00', b'000']))),
-    (b'2000-01-01T00:00:00.000-00:00', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00', b'000', b'-00', b'00']))),
-    (b'2007-02-23T00:00+00:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', None, None, b'00', b'00']))),
+    (
+        b'2000-01-01T00:00:00.000-00:00',
+        e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00', b'000', b'-00', b'00']))
+    ),
+    (
+        b'2007-02-23T00:00+00:00',
+        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', None, None, b'00', b'00']))
+    ),
     (b'2007-01-01T', e_timestamp(_tt(fields=[b'2007', b'01', b'01']))),
     (b'2000-01-01T00:00:00Z', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00']))),
-    (b'2007-02-23T00:00:00-00:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', b'00', None, b'-00', b'00']))),
-    (b'2007-02-23T12:14:33.079-08:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'12', b'14', b'33', b'079', b'-08', b'00']))),
+    (
+        b'2007-02-23T00:00:00-00:00',
+        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', b'00', None, b'-00', b'00']))
+    ),
+    (
+        b'2007-02-23T12:14:33.079-08:00',
+        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'12', b'14', b'33', b'079', b'-08', b'00']))
+    ),
     (b'2007-02-23T20:14:33.079Z', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'20', b'14', b'33', b'079']))),
-    (b'2007-02-23T20:14:33.079+00:00', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'20', b'14', b'33', b'079', b'00', b'00']))),
+    (
+        b'2007-02-23T20:14:33.079+00:00',
+        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'20', b'14', b'33', b'079', b'00', b'00']))
+    ),
     (b'0001T', e_timestamp(_tt(fields=[b'0001']))),
     (b'0007-01T', e_timestamp(_tt(fields=[b'0007', b'01']))),
     (b'0007-01-01T', e_timestamp(_tt(fields=[b'0007', b'01', b'01']))),
@@ -929,19 +950,31 @@ _good_unicode_params = partial(_basic_params, _end, 'GOOD', u'')
     _UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),
-    _top_level_value_params(),  # all top-level values as individual data events, space-delimited
-    all_top_level_as_one_stream_params(_scalar_iter, b' '),  # all top-level values as one data event, space-delimited
-    all_top_level_as_one_stream_params(_scalar_iter, b'/*foo*/'),  # all top-level values as one data event, block comment delimited
-    all_top_level_as_one_stream_params(_scalar_iter, b'//foo\n'),  # all top-level values as one data event, line comment delimited
-    _annotate_params(_top_level_value_params(is_delegate=True)),  # all annotated top-level values, spaces postpended
-    _annotate_params(_top_level_value_params(b'//foo\n/*bar*/', is_delegate=True)),  # all annotated top-level values, comments postpended
+    # all top-level values as individual data events, space-delimited
+    _top_level_value_params(),
+    # all top-level values as one data event, space-delimited
+    all_top_level_as_one_stream_params(_scalar_iter, b' '),
+    # all top-level values as one data event, block comment delimited
+    all_top_level_as_one_stream_params(_scalar_iter, b'/*foo*/'),
+    # all top-level values as one data event, line comment delimited
+    all_top_level_as_one_stream_params(_scalar_iter, b'//foo\n'),
+    # all annotated top-level values, spaces postpended
+    _annotate_params(_top_level_value_params(is_delegate=True)),
+    # all annotated top-level values, comments postpended
+    _annotate_params(_top_level_value_params(b'//foo\n/*bar*/', is_delegate=True)),
     _annotate_params(_good_params(_UNSPACED_SEXPS, is_delegate=True)),
-    _containerize_params(_scalar_params()),  # all values, each as the only value within a container
+    # all values, each as the only value within a container
+    _containerize_params(_scalar_params()),
     _containerize_params(_containerize_params(_scalar_params(), is_delegate=True, top_level=False), with_skip=False),
-    _containerize_params(_annotate_params(_scalar_params(), is_delegate=True)),  # all values, each as the only value within a container
-    _containerize_params(_all_scalars_in_one_container_params()),  # all values within a single container
-    _containerize_params(_annotate_params(_all_scalars_in_one_container_params(), is_delegate=True)),  # annotated containers
-    _containerize_params(_annotate_params(_incomplete_params(_UNSPACED_SEXPS, is_delegate=True, top_level=False), is_delegate=True)),
+    # all values, each as the only value within a container
+    _containerize_params(_annotate_params(_scalar_params(), is_delegate=True)),
+    # all values within a single container
+    _containerize_params(_all_scalars_in_one_container_params()),
+    # annotated containers
+    _containerize_params(_annotate_params(_all_scalars_in_one_container_params(), is_delegate=True)),
+    _containerize_params(_annotate_params(_incomplete_params(
+        _UNSPACED_SEXPS, is_delegate=True, top_level=False), is_delegate=True
+    )),
 ))
 def test_raw_reader(p):
     reader_scaffold(reader(is_unicode=p.is_unicode), p.event_pairs)
