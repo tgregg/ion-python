@@ -34,6 +34,14 @@ _c = safe_unichr
 
 
 def _illegal_character(c, ctx, message=''):
+    """Raises an IonException upon encountering the given illegal character in the given context.
+
+    Args:
+        c (int): Ordinal of the illegal character.
+        ctx (_HandlerContext):  Context in which the illegal character was encountered.
+        message (Optional[str]): Additional information, as necessary.
+
+    """
     container_type = ctx.container.ion_type is None and 'top-level' or ctx.container.ion_type.name
     value_type = ctx.ion_type is None and 'unknown' or ctx.ion_type.name
     raise IonException('Illegal character %s at position %d in %s value contained in %s. %s Pending value: %s'
@@ -41,7 +49,9 @@ def _illegal_character(c, ctx, message=''):
 
 
 def _whitelist(dct, fallback=_illegal_character):
-
+    """Wraps the given dictionary such that the given fallback function will be called when a nonexistent key is
+    accessed.
+    """
     out = defaultdict(lambda: fallback)
     for k, v in six.iteritems(dct):
         out[k] = v
@@ -49,6 +59,11 @@ def _whitelist(dct, fallback=_illegal_character):
 
 
 def _merge_dicts(*args):
+    """Merges a sequence of dictionaries and/or tuples into a single dictionary.
+
+    If a given argument is a tuple, it must have two elements, the first of which is a sequence of keys and the second
+    of which is a single value, which will be mapped to from each of the keys in the sequence.
+    """
     dct = {}
     for arg in args:
         if isinstance(arg, dict):
@@ -123,6 +138,10 @@ _FALSE_SEQUENCE = _seq(b'alse')
 _NAN_SEQUENCE = _seq(b'an')
 _INF_SEQUENCE = _seq(b'inf')
 
+_POS_INF = float('+inf')
+_NEG_INF = float('-inf')
+_NAN = float('nan')
+
 
 class _NullSequence:
     def __init__(self, ion_type, sequence):
@@ -168,7 +187,7 @@ _NULL_B_NEXT = {
 
 _NULL_STARTS = {
     _o(b'n'): _NULL_SEQUENCE,  # null.null
-    _o(b's'): _NULL_S_NEXT, # null.string, null.symbol, null.struct, null.sexp
+    _o(b's'): _NULL_S_NEXT,  # null.string, null.symbol, null.struct, null.sexp
     _o(b'i'): _NULL_INT_SEQUENCE,  # null.int
     _o(b'f'): _NULL_FLOAT_SEQUENCE,  # null.float
     _o(b'd'): _NULL_DECIMAL_SEQUENCE,  # null.decimal
@@ -197,8 +216,23 @@ _C_LIST = _Container((_CLOSE_BRACKET,), (_COMMA,), IonType.LIST, True)
 _C_SEXP = _Container((_CLOSE_PAREN,), (), IonType.SEXP, False)
 
 
-class CodePointArray(collections.MutableSequence):
+class _CodePoint(int):
+    """Evaluates as the ordinal of a code point, while also containing the unicode character representation and
+    indicating whether the code point was escaped.
+    """
+    def __init__(self, *args, **kwargs):
+        self.char = None
+        self.is_escaped = False
 
+
+class _CodePointHolder:
+    """Holds a _CodePoint for passing between co-routines."""
+    def __init__(self):
+        self.code_point = None
+
+
+class CodePointArray(collections.MutableSequence):
+    """A mutable sequence of code points. Used in place of bytearray() for text values."""
     def __init__(self, initial_bytes=None):
         self.value = u''
         if initial_bytes is not None:
@@ -288,22 +322,26 @@ class _HandlerContext(record(
         """Returns an immediate transition to another co-routine."""
         return trans_cls(None, delegate), self
 
-    def read_data_event(self, whence, stream_event=ION_STREAM_INCOMPLETE_EVENT):
-        """Creates a co-routine for retrieving data.
+    def read_data_event(self, whence, complete=False):
+        """Creates a co-routine for retrieving data as bytes.
 
         Args:
             whence (Coroutine): The co-routine to return to after the data is satisfied.
-            stream_event (Optional[IonEvent]): The stream event to return if no bytes are read or
-                available.
+            complete (Optional[bool]): True if STREAM_END should be emitted if no bytes are read or
+                available; False if INCOMPLETE should be emitted in that case.
         """
-        return Transition(None, _read_data_handler(whence, self, stream_event=stream_event))
+        return Transition(None, _read_data_handler(whence, self, complete))
 
-    def next_code_point(self, whence, complete):
-        stream_event = complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT
+    def next_code_point(self, whence):
+        """Creates a co-routine for retrieving data as code points.
+
+        This should be used in quoted string contexts.
+        """
         out = _CodePointHolder()
-        return Transition(None, _next_code_point_handler(whence, self, out, stream_event)), out
+        return Transition(None, _next_code_point_handler(whence, self, out)), out
 
     def derive_unicode(self, quoted_text=False):
+        """Derives a context for text values, indicating whether the text is quoted."""
         if isinstance(self.value, CodePointArray):
             assert self.quoted_text == quoted_text
             return self
@@ -321,6 +359,9 @@ class _HandlerContext(record(
         )
 
     def derive_unquoted_text(self):
+        """Derives an unquoted text context. Useful when the current context represents quoted text, and the quoted
+        text is exited.
+        """
         return _HandlerContext(
             self.container,
             self.queue,
@@ -334,6 +375,7 @@ class _HandlerContext(record(
         )
 
     def derive_container_context(self, ion_type, whence, add_depth=1):
+        """Derives a container context as a child of the current context."""
         if ion_type is IonType.STRUCT:
             container = _C_STRUCT
         elif ion_type is IonType.LIST:
@@ -355,6 +397,7 @@ class _HandlerContext(record(
         )
 
     def derive_child_context(self, whence):
+        """Derives a scalar context as a child of the current context."""
         return _HandlerContext(
             self.container,
             self.queue,
@@ -368,6 +411,7 @@ class _HandlerContext(record(
         )
 
     def derive_ion_type(self, ion_type):
+        """Derives a context with the given IonType."""
         return _HandlerContext(
             self.container,
             self.queue,
@@ -382,6 +426,7 @@ class _HandlerContext(record(
         )
 
     def derive_annotation(self):
+        """Derives a context which appends the current context's pending_symbol to its annotations sequence."""
         assert self.pending_symbol is not None
         assert not self.value
         annotations = (self.pending_symbol, )  # pending_symbol becomes an annotation
@@ -398,6 +443,7 @@ class _HandlerContext(record(
         )
 
     def derive_field_name(self):
+        """Derives a context which sets the current context's pending_symbol as its field name."""
         assert self.pending_symbol is not None
         assert not self.value
         return _HandlerContext(
@@ -413,6 +459,7 @@ class _HandlerContext(record(
         )
 
     def derive_pending_symbol(self, pending_symbol=None):
+        """Derives a context with the given pending_symbol, and resets the context's value."""
         if pending_symbol is None:
             pending_symbol = CodePointArray()
         return _HandlerContext(
@@ -440,7 +487,7 @@ def _composite_transition(event, ctx, next_handler, next_ctx=None):
 
 
 class _SelfDelimitingTransition(Transition):
-    """Signals that this transition terminates token that is self-delimiting, e.g. quoted string, container, comment."""
+    """Signals that this transition terminates token that is self-delimiting, e.g. short string, container, comment."""
 
 
 @coroutine
@@ -625,6 +672,7 @@ class _TimestampState(Enum):
 
 
 class _TimestampTokens:
+    """Holds the individual numeric tokens (as strings) that compose a Timestamp."""
     def __init__(self, year=None, fields=None):
         fld = []
         for i in iter(_TimestampState):
@@ -647,12 +695,12 @@ class _TimestampTokens:
         return not self.__eq__(other)
 
     def __repr__(self):
-        out = b'TimestampTokens('
+        out = 'TimestampTokens('
         for i in iter(_TimestampState):
             val = self._fields[i]
             if val:
-                out += b'%s=%s,' % (i.name, self._fields[i])
-        out += b')'
+                out += '%s=%s,' % (i.name, self._fields[i])
+        out += ')'
         return out
 
     __str__ = __repr__
@@ -824,9 +872,15 @@ def _long_string_handler(c, ctx, is_field_name=False):
                             _illegal_character(c, ctx, 'Delimiter %s not found after value.'
                                                % (_c(ctx.container.delimiter[0]),))
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                        # c was read as a single byte. Re-read it as a code point.
+                        ctx.queue.unread(c)
+                        c, _ = yield here_in_data
                         if quotes == 1:
-                            trans = _composite_transition(trans[0], ctx,
-                                                          partial(_quoted_symbol_handler, c, is_field_name=False))
+                            trans = _composite_transition(
+                                trans[0],
+                                ctx,
+                                partial(_quoted_symbol_handler, c, is_field_name=False),
+                            )
                         else:  # quotes == 2
                             trans = trans[0], ctx.derive_child_context(ctx.whence).derive_pending_symbol()
                 elif c not in _WHITESPACE:
@@ -876,9 +930,6 @@ def _typed_null_handler(c, ctx):
             done = i == length
         c, _ = yield trans
 
-_POS_INF = float('+inf')
-_NEG_INF = float('-inf')
-_NAN = float('nan')
 
 @coroutine
 def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
@@ -999,13 +1050,18 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
                 break
             c, self = yield trans
         if ctx.container is not _C_SEXP:
-            _illegal_character(c, next_ctx is None and ctx or next_ctx)
+            _illegal_character(c, next_ctx is None and ctx or next_ctx,
+                               'Illegal character following %s.' % (_c(c_start),))
         if match_index == 0:
             if c in _OPERATORS:
                 yield ctx.immediate_transition(_operator_symbol_handler(c, ctx))
             yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
-        yield _composite_transition(ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
-                                    ctx, partial(_identifier_symbol_handler, c), next_ctx)
+        yield _composite_transition(
+            ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
+            ctx,
+            partial(_identifier_symbol_handler, c),
+            next_ctx
+        )
     return inf_or_operator_handler
 
 
@@ -1287,14 +1343,14 @@ _sexp_handler = _generate_container_start_handler(IonType.SEXP)
 
 
 @coroutine
-def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
+def _read_data_handler(whence, ctx, complete):
     """Creates a co-routine for retrieving data up to a requested size.
 
     Args:
         whence (Coroutine): The co-routine to return to after the data is satisfied.
         ctx (_HandlerContext): The context for the read.
-        stream_event (Optional[IonEvent]): The stream event to return if no bytes are read or
-            available.
+        complete (Optional[bool]): True if STREAM_END should be emitted if no bytes are read or
+            available; False if INCOMPLETE should be emitted in that case.
     """
     trans = None
     queue = ctx.queue
@@ -1307,7 +1363,7 @@ def _read_data_handler(whence, ctx, stream_event=ION_STREAM_INCOMPLETE_EVENT):
             if data_len > 0:
                 queue.extend(data)
                 yield Transition(None, whence)
-        trans = Transition(stream_event, self)
+        trans = Transition(complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT, self)
 
 
 _ZERO_START_TABLE = _whitelist(
@@ -1453,8 +1509,7 @@ def _container_handler(c, ctx):
                     else:
                         assert not ctx.quoted_text
                         if len(queue) == 0:
-                            yield ctx.read_data_event(self,
-                                                      complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+                            yield ctx.read_data_event(self, complete)
                         c = queue.read_byte()
                         if c == _COLON:
                             child_context = child_context.derive_annotation()
@@ -1465,7 +1520,7 @@ def _container_handler(c, ctx):
                 else:
                     if is_field_name:
                         _illegal_character(c, child_context, 'Illegal character after field name %s.'
-                                           % (child_context.pending_symbol))
+                                           % child_context.pending_symbol)
                     # It's a symbol value delimited by something other than a comma (i.e. whitespace or comment)
                     yield symbol_value_event()
                     child_context = None
@@ -1480,7 +1535,7 @@ def _container_handler(c, ctx):
                 else:
                     handler = _VALUE_START_TABLE[c](c, child_context)  # Initialize the new handler
             container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
-            quoted_start = c == _DOUBLE_QUOTE  or c == _SINGLE_QUOTE
+            quoted_start = c == _DOUBLE_QUOTE or c == _SINGLE_QUOTE
             complete = False
             while True:
                 # Loop over all characters in the current token. A token is either a non-symbol value or a pending
@@ -1491,7 +1546,7 @@ def _container_handler(c, ctx):
                 else:
                     if child_context.quoted_text or quoted_start:
                         quoted_start = False
-                        cp_trans, c = child_context.next_code_point(self, complete)
+                        cp_trans, c = child_context.next_code_point(self)
                         if cp_trans is not None:
                             yield cp_trans
                             c = c.code_point
@@ -1513,21 +1568,20 @@ def _container_handler(c, ctx):
                     # Hence, a new character should not be read; it should be provided to the handler for the next
                     # child context.
                     yield trans
-                    end_container = trans.event.ion_type.is_container and \
-                                    trans.event.event_type is not IonEventType.SCALAR
-                    if end_container:
+                    is_container = trans.event.ion_type.is_container and \
+                        trans.event.event_type is not IonEventType.SCALAR
+                    if is_container:
                         assert next_transition is None
                         yield Transition(
                             None,
                             _container_handler(c, ctx.derive_container_context(trans.event.ion_type, self))
                         )
                     complete = ctx.depth == 0
-                    if end_container or isinstance(trans, _SelfDelimitingTransition):
+                    if is_container or isinstance(trans, _SelfDelimitingTransition):
                         # The end of the value has been reached, and c needs to be updated
                         assert not ctx.quoted_text
                         if len(queue) == 0:
-                            yield ctx.read_data_event(self,
-                                                      complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+                            yield ctx.read_data_event(self, complete)
                         c = queue.read_byte()
                     delimiter_required = ctx.container.is_delimited
                     if next_transition is None:
@@ -1550,8 +1604,7 @@ def _container_handler(c, ctx):
                     # This happens at the end of a comment within this container, or when a symbol token has been
                     # found. In both cases, an event should not be emitted. Read the next character and continue.
                     if len(queue) == 0:
-                        yield ctx.read_data_event(self,
-                                                  complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+                        yield ctx.read_data_event(self, complete)
                     c = queue.read_byte()
                     break
                 # This is an immediate transition to a handler (may be the same one) for the current token.
@@ -1559,7 +1612,7 @@ def _container_handler(c, ctx):
         else:
             assert not ctx.quoted_text
             if len(queue) == 0:
-                yield ctx.read_data_event(self, complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT)
+                yield ctx.read_data_event(self, complete)
             c = queue.read_byte()
 
 
@@ -1591,24 +1644,14 @@ def _skip_trampoline(handler):
         data_event, _ = yield Transition(event, self)
 
 
-class CodePoint(int):
-    def __init__(self, *args, **kwargs):
-        self.char = None
-        self.is_escaped = False
-
-
-class _CodePointHolder:
-    def __init__(self):
-        self.code_point = None
-
-
 @coroutine
-def _next_code_point_handler(whence, ctx, out, stream_event):
+def _next_code_point_handler(whence, ctx, out):
+    """Retrieves the next code point from within a quoted string or symbol."""
     data_event, self = yield
     queue = ctx.queue
     while True:
         if len(queue) == 0:
-            yield ctx.read_data_event(self, stream_event=stream_event)
+            yield ctx.read_data_event(self)
         queue_iter = iter(queue)
         code_point_generator = next_code_point(queue, queue_iter, yield_char=True)
         cp_pair = next(code_point_generator)
@@ -1621,7 +1664,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
             escaped_newline = False
             while True:
                 if len(queue) == 0:
-                    yield ctx.read_data_event(self, ION_STREAM_INCOMPLETE_EVENT)
+                    yield ctx.read_data_event(self)
                 code_point = next(queue_iter)
                 if six.indexbytes(escape_sequence, -1) == _BACKSLASH:
                     if code_point == _o(b'x'):
@@ -1639,7 +1682,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
                         escaped_newline = True
                         if code_point == _CARRIAGE_RETURN:
                             if len(queue) == 0:
-                                yield ctx.read_data_event(self, ION_STREAM_INCOMPLETE_EVENT)
+                                yield ctx.read_data_event(self)
                             code_point = next(queue_iter)
                             if code_point != _NEWLINE:
                                 queue.unread(code_point)
@@ -1651,7 +1694,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
                 else:
                     if code_point not in _HEX_DIGITS:
                         _illegal_character(code_point, ctx,
-                                           'Non-hex character %s found in unicode escape.' %(_c(code_point),))
+                                           'Non-hex character %s found in unicode escape.' % (_c(code_point),))
                     escape_sequence += six.int2byte(code_point)
                     if len(escape_sequence) == num_digits:
                         break
@@ -1659,7 +1702,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
                 continue
             escape_sequence = escape_sequence.decode('unicode-escape')
             cp_iter = unicode_iter(escape_sequence)
-            out.code_point = CodePoint(next(cp_iter))
+            out.code_point = _CodePoint(next(cp_iter))
             out.code_point.char = escape_sequence
             out.code_point.is_escaped = True
             yield Transition(None, whence)
@@ -1669,7 +1712,7 @@ def _next_code_point_handler(whence, ctx, out, stream_event):
             if cp_pair is not None:
                 code_point, surrogates = cp_pair
         if len(surrogates) > 1:
-            out.code_point = CodePoint(code_point)
+            out.code_point = _CodePoint(code_point)
             out.code_point.char = u''
             for surrogate in surrogates:
                 out.code_point.char += six.unichr(surrogate)

@@ -192,7 +192,8 @@ def read_data_event(data):
     with the ``DATA`` :class:`ReadEventType`.
 
     Args:
-        data (bytes): The data for the event.
+        data (bytes|unicode): The data for the event. Bytes are accepted by both binary and text readers, while unicode
+            is accepted by text readers with is_unicode=True.
     """
     return DataEvent(ReadEventType.DATA, data)
 

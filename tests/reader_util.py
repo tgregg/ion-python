@@ -65,6 +65,9 @@ def reader_scaffold(reader, event_pairs):
 
 
 def value_iter(event_func, values, *args):
+    """Generates input/output event pairs from a sequence whose first element is the raw data and the following
+    elements are the expected output events.
+    """
     for seq in values:
         data = seq[0]
         event_pairs = list(event_func(data, seq[1:], *args))

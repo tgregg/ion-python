@@ -247,16 +247,12 @@ _SKIP = (
 )
 
 
-def _good_sexp(*events):
-    return (e_start_sexp(),) + events + (e_end_sexp(),)
+def _good_container(start, end, *events):
+    return (start(),) + events + (end(),)
 
-
-def _good_struct(*events):
-    return (e_start_struct(),) + events + (e_end_struct(),)
-
-
-def _good_list(*events):
-    return (e_start_list(),) + events + (e_end_list(),)
+_good_sexp = partial(_good_container, e_start_sexp, e_end_sexp)
+_good_struct = partial(_good_container, e_start_struct, e_end_struct)
+_good_list = partial(_good_container, e_start_list, e_end_list)
 
 
 _GOOD = (
@@ -347,6 +343,7 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (u"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (u"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
+    (u"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(b'42')),
     (u'"\\\n"', e_string(u'')),
     (u'"\\\r\n"', e_string(u'')),
     (u'"\\\r"', e_string(u'')),
@@ -369,6 +366,7 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (b'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (b"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (b"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
+    (b"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(b'42')),
     (b'"\\\n"', e_string(u'')),
     (b'"\\\r\n"', e_string(u'')),
     (b'"\\\r"', e_string(u'')),
@@ -620,6 +618,11 @@ _GOOD_SCALARS = (
 
 
 def _scalar_event_pairs(data, events, delimiter):
+    """Generates event pairs for all scalars.
+
+    Each scalar is represented by a sequence whose first element is the raw data and whose following elements are the
+    expected output events.
+    """
     first = True
     space_delimited = not (b',' in delimiter)
     for event in events:
@@ -646,6 +649,7 @@ _scalar_iter = partial(value_iter, _scalar_event_pairs, _GOOD_SCALARS)
 
 @coroutine
 def _scalar_params():
+    """Generates scalars as reader parameters."""
     while True:
         delimiter = yield
         for data, event_pairs in _scalar_iter(delimiter):
@@ -675,6 +679,7 @@ def _top_level_value_params(delimiter=b' ', is_delegate=False):
 
 @coroutine
 def _all_scalars_in_one_container_params():
+    """Generates one parameter that contains all scalar events in a single container. """
     while True:
         delimiter = yield
 
@@ -701,7 +706,7 @@ def _all_scalars_in_one_container_params():
 
 
 def _collect_params(param_generator, delimiter):
-    """Collect all output of the given coroutine into a single list."""
+    """Collects all output of the given coroutine into a single list."""
     params = []
     while True:
         param = param_generator.send(delimiter)
@@ -762,6 +767,7 @@ _TEST_FIELD_NAMES = (
 
 
 def _generate_annotations():
+    """Circularly generates annotations."""
     assert len(_TEST_SYMBOLS[0]) == len(_TEST_SYMBOLS[1])
     i = 1
     num_symbols = len(_TEST_SYMBOLS[0])
@@ -777,7 +783,7 @@ _annotations_generator = _generate_annotations()
 
 @coroutine
 def _annotate_params(params, is_delegate=False):
-    """Adds annotation wrappers for a given iterator of parameters"""
+    """Adds annotation wrappers for a given iterator of parameters."""
 
     while True:
         delimiter = yield
@@ -813,6 +819,7 @@ def _annotate_params(params, is_delegate=False):
 
 
 def _generate_field_name():
+    """Circularly generates field names."""
     assert len(_TEST_FIELD_NAMES[0]) == len(_TEST_FIELD_NAMES[1])
     i = 0
     num_symbols = len(_TEST_FIELD_NAMES[0])
@@ -905,6 +912,9 @@ def _expect_event(expected_event, data, events, delimiter):
 
 @coroutine
 def _basic_params(event_func, desc, delimiter, data_event_pairs, is_delegate=False, top_level=True):
+    """Generates parameters from a sequence whose first element is the raw data and the following
+    elements are the expected output events.
+    """
     while True:
         yield
         params = list(zip(*list(value_iter(event_func, data_event_pairs, delimiter))))[1]
@@ -915,6 +925,7 @@ def _basic_params(event_func, desc, delimiter, data_event_pairs, is_delegate=Fal
 
 
 def _paired_params(params, desc, top_level=True):
+    """Generates reader parameters from sequences of input/output event pairs."""
     for event_pairs in params:
         data = event_pairs[0][0].data
         if top_level:
@@ -950,28 +961,29 @@ _good_unicode_params = partial(_basic_params, _end, 'GOOD', u'')
     _UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),
-    # all top-level values as individual data events, space-delimited
+    # All top-level values as individual data events, space-delimited.
     _top_level_value_params(),
-    # all top-level values as one data event, space-delimited
+    # All top-level values as one data event, space-delimited.
     all_top_level_as_one_stream_params(_scalar_iter, b' '),
-    # all top-level values as one data event, block comment delimited
+    # All top-level values as one data event, block comment-delimited.
     all_top_level_as_one_stream_params(_scalar_iter, b'/*foo*/'),
-    # all top-level values as one data event, line comment delimited
+    # All top-level values as one data event, line comment-delimited.
     all_top_level_as_one_stream_params(_scalar_iter, b'//foo\n'),
-    # all annotated top-level values, spaces postpended
+    # All annotated top-level values, space-delimited.
     _annotate_params(_top_level_value_params(is_delegate=True)),
-    # all annotated top-level values, comments postpended
+    # All annotated top-level values, comment-delimited.
     _annotate_params(_top_level_value_params(b'//foo\n/*bar*/', is_delegate=True)),
     _annotate_params(_good_params(_UNSPACED_SEXPS, is_delegate=True)),
-    # all values, each as the only value within a container
+    # All values, each as the only value within a container.
     _containerize_params(_scalar_params()),
     _containerize_params(_containerize_params(_scalar_params(), is_delegate=True, top_level=False), with_skip=False),
-    # all values, each as the only value within a container
+    # All values, annotated, each as the only value within a container.
     _containerize_params(_annotate_params(_scalar_params(), is_delegate=True)),
-    # all values within a single container
+    # All values within a single container.
     _containerize_params(_all_scalars_in_one_container_params()),
-    # annotated containers
+    # Annotated containers.
     _containerize_params(_annotate_params(_all_scalars_in_one_container_params(), is_delegate=True)),
+    # All unspaced sexps, annotated, in containers.
     _containerize_params(_annotate_params(_incomplete_params(
         _UNSPACED_SEXPS, is_delegate=True, top_level=False), is_delegate=True
     )),
