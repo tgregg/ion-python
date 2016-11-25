@@ -225,6 +225,14 @@ class _CodePoint(int):
         self.is_escaped = False
 
 
+def _is_escaped(c):
+    """Queries whether a character ordinal or code point was part of an escape sequence."""
+    try:
+        return c.is_escaped
+    except AttributeError:
+        return False
+
+
 class _CodePointHolder:
     """Holds a _CodePoint for passing between co-routines."""
     def __init__(self):
@@ -492,6 +500,9 @@ class _SelfDelimitingTransition(Transition):
 
 @coroutine
 def _number_negative_start_handler(c, ctx):
+    """Handles numeric values that start with a negative sign. Branches to delegate co-routines according to
+    _NEGATIVE_TABLE.
+    """
     assert c == _MINUS
     assert len(ctx.value) == 0
     ctx = ctx.derive_ion_type(IonType.INT)
@@ -502,6 +513,9 @@ def _number_negative_start_handler(c, ctx):
 
 @coroutine
 def _number_zero_start_handler(c, ctx):
+    """Handles numeric values that start with zero or negative zero. Branches to delegate co-routines according to
+    _ZERO_START_TABLE.
+    """
     assert c == _ZERO
     assert len(ctx.value) == 0 or (len(ctx.value) == 1 and ctx.value[0] == _MINUS)
     ctx = ctx.derive_ion_type(IonType.INT)
@@ -517,6 +531,9 @@ def _number_zero_start_handler(c, ctx):
 
 @coroutine
 def _number_or_timestamp_handler(c, ctx):
+    """Handles numeric values that start with digits 1-9. May terminate a value, in which case that value is an
+    int. If it does not terminate a value, it branches to delegate co-routines according to _NUMBER_OR_TIMESTAMP_TABLE.
+    """
     assert c in _DIGITS
     ctx = ctx.derive_ion_type(IonType.INT)  # If this is the last digit read, this value is an Int.
     val = ctx.value
@@ -538,6 +555,9 @@ def _number_or_timestamp_handler(c, ctx):
 
 @coroutine
 def _number_slash_end_handler(c, ctx, event):
+    """Handles numeric values that end in a forward slash. This is only legal if the slash begins a comment; thus,
+    this co-routine either results in an error being raised or an event being yielded.
+    """
     assert c == _SLASH
     c, self = yield
     next_ctx = ctx.derive_child_context(ctx.whence)
@@ -547,10 +567,11 @@ def _number_slash_end_handler(c, ctx, event):
     yield [event[0], next_ctx.immediate_transition(comment)[0]], next_ctx
 
 
-def _generate_numeric_handler(charset, transition, assertion, illegal_before_underscore,
-                              illegal_at_end=(None,), ion_type=None, append_first_if_not=None):
+def _numeric_handler_factory(charset, transition, assertion, illegal_before_underscore,
+                             illegal_at_end=(None,), ion_type=None, append_first_if_not=None):
+    """Generates a handler co-routine which tokenizes a numeric component."""
     @coroutine
-    def coefficient_handler(c, ctx):
+    def numeric_handler(c, ctx):
         assert assertion(c, ctx)
         if ion_type is not None:
             ctx = ctx.derive_ion_type(ion_type)
@@ -578,10 +599,11 @@ def _generate_numeric_handler(charset, transition, assertion, illegal_before_und
                         val.append(c)
             prev = c
             c, _ = yield trans
-    return coefficient_handler
+    return numeric_handler
 
 
-def _generate_exponent_handler(ion_type, exp_chars):
+def _exponent_handler_factory(ion_type, exp_chars):
+    """Generates a handler co-routine which tokenizes an numeric exponent."""
     def transition(prev, c, ctx, trans):
         if c == _MINUS and prev in exp_chars:
             ctx.value.append(c)
@@ -589,31 +611,33 @@ def _generate_exponent_handler(ion_type, exp_chars):
             _illegal_character(c, ctx)
         return trans
     illegal = exp_chars + (_MINUS,)
-    return _generate_numeric_handler(_DIGITS, transition, lambda c, ctx: c in exp_chars, illegal,
-                                     illegal_at_end=illegal, ion_type=ion_type)
+    return _numeric_handler_factory(_DIGITS, transition, lambda c, ctx: c in exp_chars, illegal,
+                                    illegal_at_end=illegal, ion_type=ion_type)
 
 
-def _generate_coefficient_handler(trans_table, assertion=lambda c, ctx: True, ion_type=None, append_first_if_not=None):
+def _coefficient_handler_factory(trans_table, assertion=lambda c, ctx: True, ion_type=None, append_first_if_not=None):
+    """Generates a handler co-routine which tokenizes a numeric coefficient."""
     def transition(prev, c, ctx, trans):
         if prev == _UNDERSCORE:
             _illegal_character(c, ctx, 'Underscore before %s.' % (_c(c),))
         return ctx.immediate_transition(trans_table[c](c, ctx))
-    return _generate_numeric_handler(_DIGITS, transition, assertion, (_DOT,),
-                                     ion_type=ion_type, append_first_if_not=append_first_if_not)
+    return _numeric_handler_factory(_DIGITS, transition, assertion, (_DOT,),
+                                    ion_type=ion_type, append_first_if_not=append_first_if_not)
 
 
-def _generate_radix_int_handler(radix_indicators, charset):
+def _radix_int_handler_factory(radix_indicators, charset):
+    """Generates a handler co-routine which tokenizes a integer of a particular radix."""
     def assertion(c, ctx):
         return c in radix_indicators and \
                ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
                 (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
                ctx.ion_type == IonType.INT
-    return _generate_numeric_handler(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
-                                     assertion, radix_indicators, illegal_at_end=radix_indicators)
+    return _numeric_handler_factory(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
+                                    assertion, radix_indicators, illegal_at_end=radix_indicators)
 
 
-_decimal_handler = _generate_exponent_handler(IonType.DECIMAL, _DECIMAL_EXPS)
-_float_handler = _generate_exponent_handler(IonType.FLOAT, _FLOAT_EXPS)
+_decimal_handler = _exponent_handler_factory(IonType.DECIMAL, _DECIMAL_EXPS)
+_float_handler = _exponent_handler_factory(IonType.FLOAT, _FLOAT_EXPS)
 
 
 _FRACTIONAL_NUMBER_TABLE = _whitelist(
@@ -623,7 +647,7 @@ _FRACTIONAL_NUMBER_TABLE = _whitelist(
     )
 )
 
-fractional_number_handler = _generate_coefficient_handler(
+fractional_number_handler = _coefficient_handler_factory(
     _FRACTIONAL_NUMBER_TABLE, assertion=lambda c, ctx: c == _DOT, ion_type=IonType.DECIMAL)
 
 _WHOLE_NUMBER_TABLE = _whitelist(
@@ -635,13 +659,16 @@ _WHOLE_NUMBER_TABLE = _whitelist(
     )
 )
 
-_whole_number_handler = _generate_coefficient_handler(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
-_binary_int_handler = _generate_radix_int_handler(_BINARY_RADIX, _BINARY_DIGITS)
-_hex_int_handler = _generate_radix_int_handler(_HEX_RADIX, _HEX_DIGITS)
+_whole_number_handler = _coefficient_handler_factory(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
+_binary_int_handler = _radix_int_handler_factory(_BINARY_RADIX, _BINARY_DIGITS)
+_hex_int_handler = _radix_int_handler_factory(_HEX_RADIX, _HEX_DIGITS)
 
 
 @coroutine
 def _timestamp_zero_start_handler(c, ctx):
+    """Handles numeric values that start with a zero followed by another digit. This is either a timestamp or an
+    error.
+    """
     val = ctx.value
     ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
     if val[0] == _MINUS:
@@ -708,6 +735,9 @@ class _TimestampTokens:
 
 @coroutine
 def _timestamp_handler(c, ctx):
+    """Handles timestamp values. Entered after the year component has been completed; tokenizes the remaining
+    components.
+    """
     assert c in _TIMESTAMP_YEAR_DELIMITERS
     ctx = ctx.derive_ion_type(IonType.TIMESTAMP)
     if len(ctx.value) != 4:
@@ -773,6 +803,7 @@ def _timestamp_handler(c, ctx):
 
 @coroutine
 def _comment_handler(c, ctx, whence):
+    """Handles comments. Upon completion of the comment, immediately transitions back to `whence`."""
     assert c == _SLASH
     c, self = yield
     if c == _SLASH:
@@ -798,6 +829,9 @@ def _comment_handler(c, ctx, whence):
 
 @coroutine
 def _sexp_slash_handler(c, ctx, whence=None, pending_event=None):
+    """Handles the special case of a forward-slash within an s-expression. This is either an operator or a
+    comment.
+    """
     assert c == _SLASH
     if whence is None:
         whence = ctx.whence
@@ -813,15 +847,9 @@ def _sexp_slash_handler(c, ctx, whence=None, pending_event=None):
         yield ctx.immediate_transition(_operator_symbol_handler(_SLASH, ctx))
 
 
-def _is_escaped(c):
-    try:
-        return c.is_escaped
-    except AttributeError:
-        return False
-
-
 @coroutine
 def _long_string_handler(c, ctx, is_field_name=False):
+    """Handles triple-quoted strings. Remains active until a value other than a long string is encountered."""
     assert c == _SINGLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
     assert not (is_clob and is_field_name)
@@ -904,6 +932,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
 
 @coroutine
 def _typed_null_handler(c, ctx):
+    """Handles typed null values. Entered once `null.` has been found."""
     assert c == _DOT
     c, self = yield
     nxt = _NULL_STARTS
@@ -933,6 +962,10 @@ def _typed_null_handler(c, ctx):
 
 @coroutine
 def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
+    """Handles the start of an unquoted text token.
+
+    This may be an operator (if in an s-expression), an identifier symbol, or a keyword.
+    """
     in_sexp = ctx.container.ion_type is IonType.SEXP
     if c not in _IDENTIFIER_STARTS:
         if in_sexp and c in _OPERATORS:
@@ -1011,7 +1044,8 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
         c, _ = yield trans
 
 
-def _generate_inf_or_operator_handler(c_start, is_delegate=True):
+def _inf_or_operator_handler_factory(c_start, is_delegate=True):
+    """Generates handler co-routines for values that may be `+inf` or `-inf`."""
     @coroutine
     def inf_or_operator_handler(c, ctx):
         next_ctx = None
@@ -1065,12 +1099,13 @@ def _generate_inf_or_operator_handler(c_start, is_delegate=True):
     return inf_or_operator_handler
 
 
-_negative_inf_or_sexp_hyphen_handler = _generate_inf_or_operator_handler(_MINUS)
-_positive_inf_or_sexp_plus_handler = _generate_inf_or_operator_handler(_PLUS, is_delegate=False)
+_negative_inf_or_sexp_hyphen_handler = _inf_or_operator_handler_factory(_MINUS)
+_positive_inf_or_sexp_plus_handler = _inf_or_operator_handler_factory(_PLUS, is_delegate=False)
 
 
 @coroutine
 def _operator_symbol_handler(c, ctx):
+    """Handles operator symbol values within s-expressions."""
     assert c in _OPERATORS
     ctx = ctx.derive_unicode()
     val = ctx.value
@@ -1084,6 +1119,7 @@ def _operator_symbol_handler(c, ctx):
 
 
 def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition):
+    """Returns a transition which ends the current symbol token."""
     if is_field_name or c in _SYMBOL_TOKEN_TERMINATORS or trans_cls is _SelfDelimitingTransition:
         # This might be an annotation or a field name.
         ctx = ctx.derive_pending_symbol(ctx.value)
@@ -1095,6 +1131,9 @@ def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition):
 
 @coroutine
 def _identifier_symbol_handler(c, ctx, is_field_name=False):
+    """Handles identifier symbol tokens. If in an s-expression, these may be followed without whitespace by
+    operators.
+    """
     in_sexp = ctx.container.ion_type is IonType.SEXP
     ctx = ctx.derive_unicode()
     if c not in _IDENTIFIER_CHARACTERS:
@@ -1125,9 +1164,10 @@ def _identifier_symbol_handler(c, ctx, is_field_name=False):
     yield _symbol_token_end(c, ctx, is_field_name)
 
 
-def _generate_quoted_text_handler(delimiter, assertion, after, append_first=True,
-                                  before=lambda ctx, is_field_name: (ctx, ctx.value, False),
-                                  on_close=lambda ctx: None):
+def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
+                                 before=lambda ctx, is_field_name: (ctx, ctx.value, False),
+                                 on_close=lambda ctx: None):
+    """Generates handlers for quoted text tokens (either short strings or quoted symbols)."""
     @coroutine
     def quoted_text_handler(c, ctx, is_field_name=False):
         assert assertion(c)
@@ -1152,7 +1192,8 @@ def _generate_quoted_text_handler(delimiter, assertion, after, append_first=True
     return quoted_text_handler
 
 
-def _generate_short_string_handler():
+def _short_string_handler_factory():
+    """Generates the short string (double quoted) handler."""
     def before(ctx, is_field_name):
         is_clob = ctx.ion_type is IonType.CLOB
         assert not (is_clob and is_field_name)
@@ -1177,19 +1218,20 @@ def _generate_short_string_handler():
             trans_cls=_SelfDelimitingTransition
         )
 
-    return _generate_quoted_text_handler(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, after, append_first=False,
-                                         before=before, on_close=on_close)
+    return _quoted_text_handler_factory(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, after, append_first=False,
+                                        before=before, on_close=on_close)
 
 
-_short_string_handler = _generate_short_string_handler()
-_quoted_symbol_handler = _generate_quoted_text_handler(
+_short_string_handler = _short_string_handler_factory()
+_quoted_symbol_handler = _quoted_text_handler_factory(
     _SINGLE_QUOTE,
     lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)),
     partial(_symbol_token_end, trans_cls=_SelfDelimitingTransition)
 )
 
 
-def _generate_single_quote_handler(on_single_quote, on_other):
+def _single_quote_handler_factory(on_single_quote, on_other):
+    """Generates handlers used for classifying tokens that begin with one or more single quotes."""
     @coroutine
     def single_quote_handler(c, ctx, is_field_name=False):
         assert c == _SINGLE_QUOTE
@@ -1202,13 +1244,13 @@ def _generate_single_quote_handler(on_single_quote, on_other):
     return single_quote_handler
 
 
-_two_single_quotes_handler = _generate_single_quote_handler(
+_two_single_quotes_handler = _single_quote_handler_factory(
     lambda c, ctx, is_field_name: ctx.derive_unicode(quoted_text=True).immediate_transition(
         _long_string_handler(c, ctx, is_field_name)
     ),
     lambda c, ctx, is_field_name: ctx.derive_pending_symbol().immediate_transition(ctx.whence)  # Empty symbol.
 )
-_long_string_or_symbol_handler = _generate_single_quote_handler(
+_long_string_or_symbol_handler = _single_quote_handler_factory(
     lambda c, ctx, is_field_name: ctx.immediate_transition(_two_single_quotes_handler(c, ctx, is_field_name)),
     lambda c, ctx, is_field_name: ctx.immediate_transition(_quoted_symbol_handler(c, ctx, is_field_name))
 )
@@ -1216,6 +1258,7 @@ _long_string_or_symbol_handler = _generate_single_quote_handler(
 
 @coroutine
 def _struct_or_lob_handler(c, ctx):
+    """Handles tokens that begin with an open brace."""
     assert c == _OPEN_BRACE
     c, self = yield
     yield ctx.immediate_transition(_STRUCT_OR_LOB_TABLE[c](c, ctx))
@@ -1223,6 +1266,7 @@ def _struct_or_lob_handler(c, ctx):
 
 @coroutine
 def _lob_start_handler(c, ctx):
+    """Handles tokens that begin with two open braces."""
     assert c == _OPEN_BRACE
     c, self = yield
     trans = ctx.immediate_transition(self)
@@ -1247,7 +1291,8 @@ def _lob_start_handler(c, ctx):
         c, _ = yield trans
 
 
-def _generate_lob_end_handler(ion_type, action, validate=lambda c, ctx, action_res: None):
+def _lob_end_handler_factory(ion_type, action, validate=lambda c, ctx, action_res: None):
+    """Generates handlers for the end of blob or clob values."""
     assert ion_type is IonType.BLOB or ion_type is IonType.CLOB
 
     @coroutine
@@ -1275,7 +1320,8 @@ def _generate_lob_end_handler(ion_type, action, validate=lambda c, ctx, action_r
     return lob_end_handler
 
 
-def _generate_blob_end_handler():
+def _blob_end_handler_factory():
+    """Generates the handler for the end of a blob value. This includes the base-64 data and the two closing braces."""
     def expand_res(res):
         if res is None:
             return 0, 0
@@ -1303,21 +1349,24 @@ def _generate_blob_end_handler():
             _illegal_character(c, ctx, 'Incorrect number of pad characters (%d) for a blob of %d base-64 digits.'
                                % (num_pads, num_digits))
 
-    return _generate_lob_end_handler(IonType.BLOB, action, validate)
+    return _lob_end_handler_factory(IonType.BLOB, action, validate)
 
-_blob_end_handler = _generate_blob_end_handler()
+_blob_end_handler = _blob_end_handler_factory()
 
 
-def _generate_clob_end_handler():
+def _clob_end_handler_factory():
+    """Generates the handler for the end of a clob value. This includes anything from the data's closing quote through
+    the second closing brace.
+    """
     def action(c, ctx, prev, is_self_delimited, res, is_first):
         if is_first and is_self_delimited and c == _DOUBLE_QUOTE:
             assert c is prev
             return res
         _illegal_character(c, ctx)
 
-    return _generate_lob_end_handler(IonType.CLOB, action)
+    return _lob_end_handler_factory(IonType.CLOB, action)
 
-_clob_end_handler = _generate_clob_end_handler()
+_clob_end_handler = _clob_end_handler_factory()
 
 
 _single_quoted_field_name_handler = partial(_long_string_or_symbol_handler, is_field_name=True)
@@ -1325,7 +1374,8 @@ _double_quoted_field_name_handler = partial(_short_string_handler, is_field_name
 _unquoted_field_name_handler = partial(_symbol_or_keyword_handler, is_field_name=True)
 
 
-def _generate_container_start_handler(ion_type, before_yield=lambda c, ctx: None):
+def _container_start_handler_factory(ion_type, before_yield=lambda c, ctx: None):
+    """Generates handlers for tokens that begin with container start characters."""
     assert ion_type.is_container
 
     @coroutine
@@ -1337,9 +1387,9 @@ def _generate_container_start_handler(ion_type, before_yield=lambda c, ctx: None
 
 
 # Struct requires unread_byte because we had to read one char past the { to make sure it wasn't a lob.
-_struct_handler = _generate_container_start_handler(IonType.STRUCT, lambda c, ctx: ctx.queue.unread(c))
-_list_handler = _generate_container_start_handler(IonType.LIST)
-_sexp_handler = _generate_container_start_handler(IonType.SEXP)
+_struct_handler = _container_start_handler_factory(IonType.STRUCT, lambda c, ctx: ctx.queue.unread(c))
+_list_handler = _container_start_handler_factory(IonType.LIST)
+_sexp_handler = _container_start_handler_factory(IonType.SEXP)
 
 
 @coroutine
@@ -1431,6 +1481,7 @@ _VALUE_START_TABLE = _whitelist(
 
 @coroutine
 def _container_handler(c, ctx):
+    """Coroutine for container values. Delegates to other coroutines to tokenize all child values."""
     _, self = (yield None)
     queue = ctx.queue
     child_context = None
