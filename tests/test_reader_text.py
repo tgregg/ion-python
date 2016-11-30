@@ -17,6 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from decimal import Decimal
 from itertools import chain
 
 import six
@@ -32,6 +33,7 @@ from tests.reader_util import ReaderParameter, reader_scaffold, all_top_level_as
 
 _P = ReaderParameter
 _tt = _TimestampTokens
+_d = Decimal
 
 _BAD = (
     (b'+1',),
@@ -210,7 +212,7 @@ _INCOMPLETE = (
 )
 
 _SKIP = (
-    [(e_read(b'123 456 '), e_int(b'123')), (SKIP, TypeError)],  # Can't skip at top-level.
+    [(e_read(b'123 456 '), e_int(123)), (SKIP, TypeError)],  # Can't skip at top-level.
     [(e_read(b'[]'), e_start_list()), (SKIP, e_end_list()), (NEXT, END)],
     [(e_read(b'{//\n}'), e_start_struct()), (SKIP, e_end_struct()), (NEXT, END)],
     [(e_read(b'(/**/)'), e_start_sexp()), (SKIP, e_end_sexp()), (NEXT, END)],
@@ -256,15 +258,15 @@ _good_list = partial(_good_container, e_start_list, e_end_list)
 
 
 _GOOD = (
-    (b'42[]', e_int(b'42')) + _good_list(),
-    (b'\'foo\'123 ', e_symbol(u'foo'), e_int(b'123')),
+    (b'42[]', e_int(42)) + _good_list(),
+    (b'\'foo\'123 ', e_symbol(u'foo'), e_int(123)),
     (b'null()', e_null()) + _good_sexp(),
     (b'tru{}', e_symbol(u'tru')) + _good_struct(),
-    (b'{{"foo"}}42{{}}', e_clob(u'foo'), e_int(b'42'), e_blob(b'')),
+    (b'{{"foo"}}42{{}}', e_clob(u'foo'), e_int(42), e_blob(b'')),
     (b'+inf"bar"', e_float(_POS_INF), e_string(u'bar')),
     (b'foo\'bar\'"baz"', e_symbol(u'foo'), e_symbol(u'bar'), e_string(u'baz')),
-    (b'\'\'\'foo\'\'\'\'\'123 ', e_string(u'foo'), e_symbol(u''), e_int(b'123')),
-    (b'\'\'\'foo\'\'\'\'abc\'123 ', e_string(u'foo'), e_symbol(u'abc'), e_int(b'123')),
+    (b'\'\'\'foo\'\'\'\'\'123 ', e_string(u'foo'), e_symbol(u''), e_int(123)),
+    (b'\'\'\'foo\'\'\'\'abc\'123 ', e_string(u'foo'), e_symbol(u'abc'), e_int(123)),
     (b'[]',) + _good_list(),
     (b'()',) + _good_sexp(),
     (b'{}',) + _good_struct(),
@@ -285,7 +287,7 @@ _GOOD = (
     (b'[\'foo\']',) + _good_list(e_symbol(u'foo')),
     (b'/*foo*///bar\n/*baz*/',),
     (b'/*\\n*///\\u3000\n',),
-    (b'\'\'::123 ', e_int(value=b'123', annotations=(u'',))),
+    (b'\'\'::123 ', e_int(123, annotations=(u'',))),
     (b'{foo:zar::[], bar: (), baz:{}}',) + _good_struct(
         e_start_list(field_name=u'foo', annotations=(u'zar',)), e_end_list(),
         e_start_sexp(field_name=u'bar'), e_end_sexp(),
@@ -343,14 +345,14 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (u"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (u"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
-    (u"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(b'42')),
+    (u"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(42)),
     (u'"\\\n"', e_string(u'')),
     (u'"\\\r\n"', e_string(u'')),
     (u'"\\\r"', e_string(u'')),
     (u'"\\\n\r"', e_string(u'\r')),
     (u'"\\\r\\xf6"', e_string(u'\xf6')),
     (u'"\\\rabc"', e_string(u'abc')),
-    (u"'\\\r\n'::42 ", e_int(b'42', annotations=(u'',))),
+    (u"'\\\r\n'::42 ", e_int(42, annotations=(u'',))),
     (u"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(u'bar', field_name=u'foo\r'))
 )
 
@@ -366,14 +368,14 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (b'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (b"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (b"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
-    (b"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(b'42')),
+    (b"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(42)),
     (b'"\\\n"', e_string(u'')),
     (b'"\\\r\n"', e_string(u'')),
     (b'"\\\r"', e_string(u'')),
     (b'"\\\n\r"', e_string(u'\r')),
     (b'"\\\r\\xf6"', e_string(u'\xf6')),
     (b'"\\\rabc"', e_string(u'abc')),
-    (b"'\\\r\n'::42 ", e_int(b'42', annotations=(u'',))),
+    (b"'\\\r\n'::42 ", e_int(42, annotations=(u'',))),
     (b"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(u'bar', field_name=u'foo\r'))
 )
 
@@ -381,7 +383,7 @@ _INCOMPLETE_ESCAPES = (
     [(e_read(u'"\\'), INC), (e_read(u't"'), e_string(u'\t')), (NEXT, END)],
     [
         (e_read(u'\'\\x'), INC), (e_read(u'f'), INC), (e_read(u'6\'42 '), e_symbol(u'\xf6')),
-        (NEXT, e_int(b'42')), (NEXT, END)
+        (NEXT, e_int(42)), (NEXT, END)
     ],
     [
         (e_read(u'{"\\U0001'), e_start_struct()), (NEXT, INC), (e_read(u'f4a9"'), INC),
@@ -389,7 +391,7 @@ _INCOMPLETE_ESCAPES = (
     ],
     [
         (e_read(u"'''\\\r"), INC), (e_read(u"\n'''//\n"), INC), (e_read(u"'''abc'''42 "), e_string(u'abc')),
-        (NEXT, e_int(b'42')), (NEXT, END)
+        (NEXT, e_int(42)), (NEXT, END)
     ],
 )
 
@@ -431,6 +433,8 @@ _BAD_ESCAPES_FROM_BYTES = (
     (b'"\\U0001f4aQ"',),
     (b"{{'''abc'''\\n}}",),
     (b'{{"abc"\\n}}',),
+    (b'{\'foo\'\\v:bar}', e_start_struct()),
+    (b'{\'\'\'foo\'\'\'\\xf6:bar}', e_start_struct()),
 )
 
 
@@ -443,26 +447,26 @@ _UNSPACED_SEXPS = (
     (b'(foo/*bar*/ ::baz)',) + _good_sexp(e_symbol(value=u'baz', annotations=(u'foo',))),
     (b'(\'a b\' //\n::cd)',) + _good_sexp(e_symbol(value=u'cd', annotations=(u'a b',))),
     (b'(abc//baz\n-)',) + _good_sexp(e_symbol(u'abc'), e_symbol(u'-')),
-    (b'(null-100/**/)',) + _good_sexp(e_null(), e_int(b'-100')),
+    (b'(null-100/**/)',) + _good_sexp(e_null(), e_int(-100)),
     (b'(//\nnull//\n)',) + _good_sexp(e_null()),
-    (b'(abc/*baz*/123)',) + _good_sexp(e_symbol(u'abc'), e_int(b'123')),
+    (b'(abc/*baz*/123)',) + _good_sexp(e_symbol(u'abc'), e_int(123)),
     (b'(abc/*baz*/-)',) + _good_sexp(e_symbol(u'abc'), e_symbol(u'-')),
-    (b'(abc//baz\n123)',) + _good_sexp(e_symbol(u'abc'), e_int(b'123')),
+    (b'(abc//baz\n123)',) + _good_sexp(e_symbol(u'abc'), e_int(123)),
     (b'(foo%+null-//\n)',) + _good_sexp(e_symbol(u'foo'), e_symbol(u'%+'), e_null(), e_symbol(u'-//')),  # Matches java.
-    (b'(null-100)',) + _good_sexp(e_null(), e_int(b'-100')),
+    (b'(null-100)',) + _good_sexp(e_null(), e_int(-100)),
     (b'(null\'a\')',) + _good_sexp(e_null(), e_symbol(u'a')),
     (b'(null\'a\'::b)',) + _good_sexp(e_null(), e_symbol(value=u'b', annotations=(u'a',))),
     (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(u'.'), e_symbol(u'b')),
     (b'(\'\'\'abc\'\'\'\'\')',) + _good_sexp(e_string(u'abc'), e_symbol(u'')),
     (b'(\'\'\'abc\'\'\'\'foo\')',) + _good_sexp(e_string(u'abc'), e_symbol(u'foo')),
-    (b'(\'\'\'abc\'\'\'\'\'42)',) + _good_sexp(e_string(u'abc'), e_symbol(u''), e_int(b'42')),
-    (b'(42\'a\'::b)',) + _good_sexp(e_int(b'42'), e_symbol(value=u'b', annotations=(u'a',))),
-    (b'(1.23[])',) + _good_sexp(e_decimal(b'1.23'), e_start_list(), e_end_list()),
+    (b'(\'\'\'abc\'\'\'\'\'42)',) + _good_sexp(e_string(u'abc'), e_symbol(u''), e_int(42)),
+    (b'(42\'a\'::b)',) + _good_sexp(e_int(42), e_symbol(value=u'b', annotations=(u'a',))),
+    (b'(1.23[])',) + _good_sexp(e_decimal(_d(u'1.23')), e_start_list(), e_end_list()),
     (b'(\'\'\'foo\'\'\'/\'\'\'bar\'\'\')',) + _good_sexp(e_string(u'foo'), e_symbol(u'/'), e_string(u'bar')),
-    (b'(-100)',) + _good_sexp(e_int(b'-100')),
-    (b'(-1.23 .)',) + _good_sexp(e_decimal(b'-1.23'), e_symbol(u'.')),
-    (b'(1.)',) + _good_sexp(e_decimal(b'1.')),
-    (b'(1. .1)',) + _good_sexp(e_decimal(b'1.'), e_symbol(u'.'), e_int(b'1')),
+    (b'(-100)',) + _good_sexp(e_int(-100)),
+    (b'(-1.23 .)',) + _good_sexp(e_decimal(_d(u'-1.23')), e_symbol(u'.')),
+    (b'(1.)',) + _good_sexp(e_decimal(_d(u'1.'))),
+    (b'(1. .1)',) + _good_sexp(e_decimal(_d(u'1.')), e_symbol(u'.'), e_int(1)),
     (b'(2001-01-01/**/a)',) + _good_sexp(e_timestamp(_tt(fields=[b'2001', b'01', b'01'])), e_symbol(u'a')),
     (b'(nul)',) + _good_sexp(e_symbol(u'nul')),
     (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=u'%-', annotations=(u'foo',)), e_symbol(u'bar')),
@@ -506,46 +510,46 @@ _GOOD_SCALARS = (
     (b'null.bool', e_bool()),
 
     (b'null.int', e_int()),
-    (b'0', e_int(b'0')),
-    (b'1_2_3', e_int(b'123')),
-    (b'0xfe', e_int(b'0xfe')),
-    (b'0b101', e_int(b'0b101')),
-    (b'0b10_1', e_int(b'0b101')),
-    (b'-0b101', e_int(b'-0b101')),
-    (b'-0b10_1', e_int(b'-0b101')),
-    (b'1', e_int(b'1')),
-    (b'-1', e_int(b'-1')),
-    (b'0xc1c2', e_int(b'0xc1c2')),
-    (b'0xc1_c2', e_int(b'0xc1c2')),
-    (b'-0xc1c2', e_int(b'-0xc1c2')),
-    (b'-0xc1_c2', e_int(b'-0xc1c2')),
+    (b'0', e_int(0)),
+    (b'1_2_3', e_int(123)),
+    (b'0xfe', e_int(254)),
+    (b'0b101', e_int(5)),
+    (b'0b10_1', e_int(5)),
+    (b'-0b101', e_int(-5)),
+    (b'-0b10_1', e_int(-5)),
+    (b'1', e_int(1)),
+    (b'-1', e_int(-1)),
+    (b'0xc1c2', e_int(49602)),
+    (b'0xc1_c2', e_int(49602)),
+    (b'-0xc1c2', e_int(-49602)),
+    (b'-0xc1_c2', e_int(-49602)),
 
     (b'null.float', e_float()),
-    (b'0.0e1', e_float(b'0.0e1')),
-    (b'-0.0e-1', e_float(b'-0.0e-1')),
-    (b'0.0E1', e_float(b'0.0E1')),
+    (b'0.0e1', e_float(0.)),
+    (b'-0.0e-1', e_float(-0.)),
+    (b'0.0E1', e_float(0.)),
     (b'-inf', e_float(_NEG_INF)),
     (b'+inf', e_float(_POS_INF)),
     (b'nan', e_float(_NAN)),
 
     (b'null.decimal', e_decimal()),
-    (b'0.0', e_decimal(b'0.0')),
-    (b'0.', e_decimal(b'0.')),
-    (b'-0.0', e_decimal(b'-0.0')),
-    (b'0d-1000', e_decimal(b'0d-1000')),
-    (b'0d1000', e_decimal(b'0d1000')),
-    (b'1d1', e_decimal(b'1d1')),
-    (b'1D1', e_decimal(b'1D1')),
-    (b'1234d-20', e_decimal(b'1234d-20')),
-    (b'1d0', e_decimal(b'1d0')),
-    (b'1d-1', e_decimal(b'1d-1')),
-    (b'0d-1', e_decimal(b'0d-1')),
-    (b'0d1', e_decimal(b'0d1')),
-    (b'-1d1', e_decimal(b'-1d1')),
-    (b'-1d0', e_decimal(b'-1d0')),
-    (b'-1d-1', e_decimal(b'-1d-1')),
-    (b'-0d-1', e_decimal(b'-0d-1')),
-    (b'-0d1', e_decimal(b'-0d1')),
+    (b'0.0', e_decimal(_d(u'0.0'))),
+    (b'0.', e_decimal(_d(u'0.'))),
+    (b'-0.0', e_decimal(_d(u'-0.0'))),
+    (b'0d-1000', e_decimal(_d(u'0e-1000'))),
+    (b'0d1000', e_decimal(_d(u'0e1000'))),
+    (b'1d1', e_decimal(_d(u'1e1'))),
+    (b'1D1', e_decimal(_d(u'1e1'))),
+    (b'1234d-20', e_decimal(_d(u'1234e-20'))),
+    (b'1d0', e_decimal(_d(u'1e0'))),
+    (b'1d-1', e_decimal(_d(u'1e-1'))),
+    (b'0d-1', e_decimal(_d(u'0e-1'))),
+    (b'0d1', e_decimal(_d(u'0e1'))),
+    (b'-1d1', e_decimal(_d(u'-1e1'))),
+    (b'-1d0', e_decimal(_d(u'-1e0'))),
+    (b'-1d-1', e_decimal(_d(u'-1e-1'))),
+    (b'-0d-1', e_decimal(_d(u'-0e-1'))),
+    (b'-0d1', e_decimal(_d(u'-0e1'))),
 
     (b'null.timestamp', e_timestamp()),
     (b'2007-01T', e_timestamp(_tt(fields=[b'2007', b'01']))),
@@ -639,7 +643,7 @@ def _scalar_event_pairs(data, events, delimiter):
                 # are delimited in these tests by another value - in this case, int 0 (but it could be anything).
                 yield input_event, INC
                 yield e_read(b'0' + delimiter), event
-                input_event, event = (NEXT, e_int(b'0'))
+                input_event, event = (NEXT, e_int(0))
             first = False
         yield input_event, event
 

@@ -17,6 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from decimal import Decimal
 from collections import defaultdict
 from functools import partial
 
@@ -24,7 +25,7 @@ import collections
 import six
 
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
-    IonEventType
+    IonEventType, IonThunkEvent
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
@@ -141,6 +142,32 @@ _INF_SEQUENCE = _seq(b'inf')
 _POS_INF = float('+inf')
 _NEG_INF = float('-inf')
 _NAN = float('nan')
+
+
+def _decode(value):
+    return value.decode('utf-8')
+
+
+def _parse_number(numeric_type, value, base=10, decode=False):
+    if base == 10:
+        numeric_type = partial(_always_base10, numeric_type)
+    else:
+        decode = True
+
+    def parse():
+        num = value if not decode else _decode(value)
+        return numeric_type(num, base)
+    return parse
+
+
+def _always_base10(numeric_type, value, base):
+    assert base == 10
+    return numeric_type(value)
+
+
+_parse_int = partial(_parse_number, int)  # In Python 2, int() returns a long if the input overflows an int.
+_parse_float = partial(_parse_number, float)
+_parse_decimal = partial(_parse_number, Decimal, decode=True)
 
 
 class _NullSequence:
@@ -522,7 +549,7 @@ def _number_zero_start_handler(c, ctx):
     ctx.value.append(c)
     c, _ = yield
     if c in _VALUE_TERMINATORS:
-        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+        trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_int(ctx.value))
         if c == _SLASH:
             trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         yield trans
@@ -542,7 +569,7 @@ def _number_or_timestamp_handler(c, ctx):
     trans = ctx.immediate_transition(self)
     while True:
         if c in _VALUE_TERMINATORS:
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+            trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_int(ctx.value))
             if c == _SLASH:
                 trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         else:
@@ -567,8 +594,8 @@ def _number_slash_end_handler(c, ctx, event):
     yield [event[0], next_ctx.immediate_transition(comment)[0]], next_ctx
 
 
-def _numeric_handler_factory(charset, transition, assertion, illegal_before_underscore,
-                             illegal_at_end=(None,), ion_type=None, append_first_if_not=None):
+def _numeric_handler_factory(charset, transition, assertion, illegal_before_underscore, parse_func,
+                             illegal_at_end=(None,), ion_type=None, append_first_if_not=None, first_char=None):
     """Generates a handler co-routine which tokenizes a numeric component."""
     @coroutine
     def numeric_handler(c, ctx):
@@ -577,7 +604,8 @@ def _numeric_handler_factory(charset, transition, assertion, illegal_before_unde
             ctx = ctx.derive_ion_type(ion_type)
         val = ctx.value
         if c != append_first_if_not:
-            val.append(c)
+            first = c if first_char is None else first_char
+            val.append(first)
         prev = c
         c, self = yield
         trans = ctx.immediate_transition(self)
@@ -585,7 +613,7 @@ def _numeric_handler_factory(charset, transition, assertion, illegal_before_unde
             if c in _VALUE_TERMINATORS:
                 if prev == _UNDERSCORE or prev in illegal_at_end:
                     _illegal_character(c, ctx, '%s at end of number.' % (_c(prev),))
-                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, parse_func(ctx.value))
                 if c == _SLASH:
                     trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
             else:
@@ -602,8 +630,11 @@ def _numeric_handler_factory(charset, transition, assertion, illegal_before_unde
     return numeric_handler
 
 
-def _exponent_handler_factory(ion_type, exp_chars):
+def _exponent_handler_factory(ion_type, exp_chars, parse_func, first_char=None):
     """Generates a handler co-routine which tokenizes an numeric exponent."""
+    def assertion(c, ctx):
+        return c in exp_chars
+
     def transition(prev, c, ctx, trans):
         if c == _MINUS and prev in exp_chars:
             ctx.value.append(c)
@@ -611,33 +642,35 @@ def _exponent_handler_factory(ion_type, exp_chars):
             _illegal_character(c, ctx)
         return trans
     illegal = exp_chars + (_MINUS,)
-    return _numeric_handler_factory(_DIGITS, transition, lambda c, ctx: c in exp_chars, illegal,
-                                    illegal_at_end=illegal, ion_type=ion_type)
+    return _numeric_handler_factory(_DIGITS, transition, lambda c, ctx: c in exp_chars, illegal, parse_func,
+                                    illegal_at_end=illegal, ion_type=ion_type, first_char=first_char)
 
 
-def _coefficient_handler_factory(trans_table, assertion=lambda c, ctx: True, ion_type=None, append_first_if_not=None):
+def _coefficient_handler_factory(trans_table, parse_func, assertion=lambda c, ctx: True,
+                                 ion_type=None, append_first_if_not=None):
     """Generates a handler co-routine which tokenizes a numeric coefficient."""
     def transition(prev, c, ctx, trans):
         if prev == _UNDERSCORE:
             _illegal_character(c, ctx, 'Underscore before %s.' % (_c(c),))
         return ctx.immediate_transition(trans_table[c](c, ctx))
-    return _numeric_handler_factory(_DIGITS, transition, assertion, (_DOT,),
+    return _numeric_handler_factory(_DIGITS, transition, assertion, (_DOT,), parse_func,
                                     ion_type=ion_type, append_first_if_not=append_first_if_not)
 
 
-def _radix_int_handler_factory(radix_indicators, charset):
+def _radix_int_handler_factory(radix_indicators, charset, base):
     """Generates a handler co-routine which tokenizes a integer of a particular radix."""
     def assertion(c, ctx):
         return c in radix_indicators and \
                ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
                 (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
                ctx.ion_type == IonType.INT
+    parse_func = partial(_parse_int, base=base)
     return _numeric_handler_factory(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
-                                    assertion, radix_indicators, illegal_at_end=radix_indicators)
+                                    assertion, radix_indicators, parse_func, illegal_at_end=radix_indicators)
 
 
-_decimal_handler = _exponent_handler_factory(IonType.DECIMAL, _DECIMAL_EXPS)
-_float_handler = _exponent_handler_factory(IonType.FLOAT, _FLOAT_EXPS)
+_decimal_handler = _exponent_handler_factory(IonType.DECIMAL, _DECIMAL_EXPS, _parse_decimal, first_char=_o(b'e'))
+_float_handler = _exponent_handler_factory(IonType.FLOAT, _FLOAT_EXPS, _parse_float)
 
 
 _FRACTIONAL_NUMBER_TABLE = _whitelist(
@@ -648,7 +681,7 @@ _FRACTIONAL_NUMBER_TABLE = _whitelist(
 )
 
 fractional_number_handler = _coefficient_handler_factory(
-    _FRACTIONAL_NUMBER_TABLE, assertion=lambda c, ctx: c == _DOT, ion_type=IonType.DECIMAL)
+    _FRACTIONAL_NUMBER_TABLE, _parse_decimal, assertion=lambda c, ctx: c == _DOT, ion_type=IonType.DECIMAL)
 
 _WHOLE_NUMBER_TABLE = _whitelist(
     _merge_dicts(
@@ -659,9 +692,9 @@ _WHOLE_NUMBER_TABLE = _whitelist(
     )
 )
 
-_whole_number_handler = _coefficient_handler_factory(_WHOLE_NUMBER_TABLE, append_first_if_not=_UNDERSCORE)
-_binary_int_handler = _radix_int_handler_factory(_BINARY_RADIX, _BINARY_DIGITS)
-_hex_int_handler = _radix_int_handler_factory(_HEX_RADIX, _HEX_DIGITS)
+_whole_number_handler = _coefficient_handler_factory(_WHOLE_NUMBER_TABLE, _parse_int, append_first_if_not=_UNDERSCORE)
+_binary_int_handler = _radix_int_handler_factory(_BINARY_RADIX, _BINARY_DIGITS, 2)
+_hex_int_handler = _radix_int_handler_factory(_HEX_RADIX, _HEX_DIGITS, 16)
 
 
 @coroutine
