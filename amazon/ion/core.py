@@ -421,8 +421,12 @@ def timestamp(year, month=1, day=1,
     """
     delta = None
     if off_hours is not None:
+        if off_hours < -23 or off_hours > 23:
+            raise ValueError('Hour offset %d is out of required range 0..23.' % (off_hours,))
         delta = timedelta(hours=off_hours)
     if off_minutes is not None:
+        if off_minutes < -59 or off_minutes > 59:
+            raise ValueError('Minute offset %d is out of required range 0..59.' % (off_minutes,))
         minutes_delta = timedelta(minutes=off_minutes)
         if delta is None:
             delta = minutes_delta

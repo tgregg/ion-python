@@ -58,7 +58,7 @@ def reader_scaffold(reader, event_pairs):
     for read_event, expected in zip(input_events, output_events):
         if is_exception(expected):
             with raises(expected):
-                reader.send(read_event)
+                reader.send(read_event).value  # Forces evaluation of all value thunks.
         else:
             actual = reader.send(read_event)
             assert expected == actual

@@ -23,6 +23,7 @@ from itertools import chain
 import six
 import sys
 
+from amazon.ion.core import timestamp, TimestampPrecision
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
 from amazon.ion.reader_text import reader, _TimestampTokens, _POS_INF, _NEG_INF, _NAN
@@ -32,10 +33,11 @@ from tests.event_aliases import *
 from tests.reader_util import ReaderParameter, reader_scaffold, all_top_level_as_one_stream_params, value_iter
 
 _P = ReaderParameter
-_tt = _TimestampTokens
+_ts = timestamp
+_tp = TimestampPrecision
 _d = Decimal
 
-_BAD = (
+_BAD_GRAMMAR = (
     (b'+1',),
     (b'01',),
     (b'1.23.4',),
@@ -61,12 +63,17 @@ _BAD = (
     (b'null.x',),
     (b'null.',),
     (b'200T',),
+    (b'10000T',),
     (b'-2000T',),
     (b'-0001T',),
     (b'00-01T',),
     (b'2000-01',),
     (b'2000-001T',),
+    (b'2000--01T',),
+    (b'2000-01-123T',),
+    (b'2000-01--3T',),
     (b'2007-02-23T20:14:33.Z',),
+    (b'2007-02-23T20:14:33.12.3Z',),
     (b'1a',),
     (b'foo-',),
     (b'%',),
@@ -152,6 +159,18 @@ _BAD = (
     (b'2000T/',),
     (b'/ ',),
     (b'/b',),
+)
+
+_BAD_VALUE = (
+    (b'0000T',),  # Years must be 1..9999
+    (b'2000-13T',),  # 2000 didn't have a thirteenth month.
+    (b'2015-02-29T',),  # 2015 was not a leap year.
+    (b'2000-01-01T24:00Z',),  # Hour is 0..23.
+    (b'2000-01-01T00:60Z',),  # Minute is 0..59.
+    (b'2000-01-01T00:00:60Z',),  # Second is 0..59.
+    (b'2000-01-01T00:00:00.9999Z',),  # Only up to millisecond-level precision is supported.
+    (b'2000-01-01T00:00:00.000+24:00',),  # Hour offset is 0..23.
+    (b'2000-01-01T00:00:00.000+00:60',),  # Minute offset is 0..59.
 )
 
 _INCOMPLETE = (
@@ -467,7 +486,7 @@ _UNSPACED_SEXPS = (
     (b'(-1.23 .)',) + _good_sexp(e_decimal(_d(u'-1.23')), e_symbol(u'.')),
     (b'(1.)',) + _good_sexp(e_decimal(_d(u'1.'))),
     (b'(1. .1)',) + _good_sexp(e_decimal(_d(u'1.')), e_symbol(u'.'), e_int(1)),
-    (b'(2001-01-01/**/a)',) + _good_sexp(e_timestamp(_tt(fields=[b'2001', b'01', b'01'])), e_symbol(u'a')),
+    (b'(2001-01-01/**/a)',) + _good_sexp(e_timestamp(_ts(2001, 1, 1, precision=_tp.DAY)), e_symbol(u'a')),
     (b'(nul)',) + _good_sexp(e_symbol(u'nul')),
     (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=u'%-', annotations=(u'foo',)), e_symbol(u'bar')),
     (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(u'.'), e_symbol(u'False'), e_symbol(u'+')),
@@ -523,6 +542,8 @@ _GOOD_SCALARS = (
     (b'0xc1_c2', e_int(49602)),
     (b'-0xc1c2', e_int(-49602)),
     (b'-0xc1_c2', e_int(-49602)),
+    (b'9223372036854775808', e_int(9223372036854775808)),
+    (b'-9223372036854775809', e_int(-9223372036854775809)),
 
     (b'null.float', e_float()),
     (b'0.0e1', e_float(0.)),
@@ -552,38 +573,36 @@ _GOOD_SCALARS = (
     (b'-0d1', e_decimal(_d(u'-0e1'))),
 
     (b'null.timestamp', e_timestamp()),
-    (b'2007-01T', e_timestamp(_tt(fields=[b'2007', b'01']))),
-    (b'2007T', e_timestamp(_tt(fields=[b'2007']))),
-    (b'2007-01-01', e_timestamp(_tt(fields=[b'2007', b'01', b'01']))),
-    (b'2000-01-01T00:00:00.000Z', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00', b'000']))),
+    (b'2007-01T', e_timestamp(_ts(2007, 1, precision=_tp.MONTH))),
+    (b'2007T', e_timestamp(_ts(2007, precision=_tp.YEAR))),
+    (b'2007-01-01', e_timestamp(_ts(2007, 1, 1, precision=_tp.DAY))),
+    (b'2000-01-01T00:00:00.000Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 0, precision=_tp.SECOND))),
     (
         b'2000-01-01T00:00:00.000-00:00',
-        e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00', b'000', b'-00', b'00']))
+        e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 0, precision=_tp.SECOND))
     ),
     (
         b'2007-02-23T00:00+00:00',
-        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', None, None, b'00', b'00']))
+        e_timestamp(_ts(2007, 2, 23, 0, 0, off_hours=0, off_minutes=0, precision=_tp.MINUTE))
     ),
-    (b'2007-01-01T', e_timestamp(_tt(fields=[b'2007', b'01', b'01']))),
-    (b'2000-01-01T00:00:00Z', e_timestamp(_tt(fields=[b'2000', b'01', b'01', b'00', b'00', b'00']))),
+    (b'2007-01-01T', e_timestamp(_ts(2007, 1, 1, precision=_tp.DAY))),
+    (b'2000-01-01T00:00:00Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, precision=_tp.SECOND))),
     (
         b'2007-02-23T00:00:00-00:00',
-        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'00', b'00', b'00', None, b'-00', b'00']))
+        e_timestamp(_ts(2007, 2, 23, 0, 0, 0, precision=_tp.SECOND))
     ),
     (
         b'2007-02-23T12:14:33.079-08:00',
-        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'12', b'14', b'33', b'079', b'-08', b'00']))
+        e_timestamp(_ts(2007, 2, 23, 12, 14, 33, 79000, off_hours=-8, off_minutes=0, precision=_tp.SECOND))
     ),
-    (b'2007-02-23T20:14:33.079Z', e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'20', b'14', b'33', b'079']))),
+    (b'2007-02-23T20:14:33.079Z', e_timestamp(_ts(2007, 2, 23, 20, 14, 33, 79000, precision=_tp.SECOND))),
     (
         b'2007-02-23T20:14:33.079+00:00',
-        e_timestamp(_tt(fields=[b'2007', b'02', b'23', b'20', b'14', b'33', b'079', b'00', b'00']))
+        e_timestamp(_ts(2007, 2, 23, 20, 14, 33, 79000, off_hours=0, off_minutes=0, precision=_tp.SECOND))
     ),
-    (b'0001T', e_timestamp(_tt(fields=[b'0001']))),
-    (b'0007-01T', e_timestamp(_tt(fields=[b'0007', b'01']))),
-    (b'0007-01-01T', e_timestamp(_tt(fields=[b'0007', b'01', b'01']))),
-    (b'0007-01-01', e_timestamp(_tt(fields=[b'0007', b'01', b'01']))),
-    (b'0001-01-01T00:00:00Z', e_timestamp(_tt(fields=[b'0001', b'01', b'01', b'00', b'00', b'00']))),
+    (b'0001T', e_timestamp(_ts(1, precision=_tp.YEAR))),
+    (b'0001-01-01T00:00:00Z', e_timestamp(_ts(1, 1, 1, 0, 0, 0, precision=_tp.SECOND))),
+    (b'2016-02-29T', e_timestamp(_ts(2016, 2, 29, precision=_tp.DAY))),
 
     (b'null.symbol', e_symbol()),
     (b'nul', e_symbol(u'nul')),  # See the logic in the event generators that forces these to emit an event.
@@ -942,25 +961,28 @@ def _paired_params(params, desc, top_level=True):
 
 
 _ion_exception = partial(_expect_event, IonException)
-_bad_params = partial(_basic_params, _ion_exception, 'BAD', b' ')
-_bad_unicode_params = partial(_basic_params, _ion_exception, 'BAD', u' ')
+_bad_grammar_params = partial(_basic_params, _ion_exception, 'BAD GRAMMAR', b' ')
+_bad_unicode_params = partial(_basic_params, _ion_exception, 'BAD GRAMMAR - UNICODE', u' ')
+_value_error = partial(_expect_event, ValueError)
+_bad_value_params = partial(_basic_params, _value_error, 'BAD VALUE', b' ')
 _incomplete = partial(_expect_event, INC)
 _incomplete_params = partial(_basic_params, _incomplete, 'INC', b'')
 _end = partial(_expect_event, END)
 _good_params = partial(_basic_params, _end, 'GOOD', b'')
-_good_unicode_params = partial(_basic_params, _end, 'GOOD', u'')
+_good_unicode_params = partial(_basic_params, _end, 'GOOD - UNICODE', u'')
 
 
 @parametrize(*chain(
     _good_params(_GOOD),
-    _bad_params(_BAD),
+    _bad_grammar_params(_BAD_GRAMMAR),
+    _bad_value_params(_BAD_VALUE),
     _incomplete_params(_INCOMPLETE),
     _good_unicode_params(_GOOD_UNICODE),
     _good_unicode_params(_GOOD_ESCAPES_FROM_UNICODE),
     _good_params(_GOOD_ESCAPES_FROM_BYTES),
     _bad_unicode_params(_BAD_UNICODE),
     _bad_unicode_params(_BAD_ESCAPES_FROM_UNICODE),
-    _bad_params(_BAD_ESCAPES_FROM_BYTES),
+    _bad_grammar_params(_BAD_ESCAPES_FROM_BYTES),
     _paired_params(_INCOMPLETE_ESCAPES, 'INCOMPLETE ESCAPES'),
     _UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
     _good_params(_UNSPACED_SEXPS),

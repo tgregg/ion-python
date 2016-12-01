@@ -25,7 +25,7 @@ import collections
 import six
 
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
-    IonEventType, IonThunkEvent
+    IonEventType, IonThunkEvent, TimestampPrecision, timestamp
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
@@ -148,26 +148,24 @@ def _decode(value):
     return value.decode('utf-8')
 
 
-def _parse_number(numeric_type, value, base=10, decode=False):
-    if base == 10:
-        numeric_type = partial(_always_base10, numeric_type)
-    else:
-        decode = True
-
+def _parse_number(parse_func, value, base=10):
     def parse():
-        num = value if not decode else _decode(value)
-        return numeric_type(num, base)
+        return parse_func(value, base)
     return parse
 
 
-def _always_base10(numeric_type, value, base):
-    assert base == 10
-    return numeric_type(value)
+def _omit_base(parse_func, value, base, decode=False):
+    if base == 10:
+        if decode:
+            value = _decode(value)
+        return parse_func(value)
+    return parse_func(_decode(value), base)
 
 
-_parse_int = partial(_parse_number, int)  # In Python 2, int() returns a long if the input overflows an int.
-_parse_float = partial(_parse_number, float)
-_parse_decimal = partial(_parse_number, Decimal, decode=True)
+# In Python 2, int() returns a long if the input overflows an int.
+_parse_int = partial(_parse_number, partial(_omit_base, int))
+_parse_float = partial(_parse_number, partial(_omit_base, float))
+_parse_decimal = partial(_parse_number, partial(_omit_base, Decimal, decode=True))
 
 
 class _NullSequence:
@@ -732,13 +730,11 @@ class _TimestampState(Enum):
 
 
 class _TimestampTokens:
-    """Holds the individual numeric tokens (as strings) that compose a Timestamp."""
-    def __init__(self, year=None, fields=None):
+    """Holds the individual numeric tokens (as strings) that compose a `Timestamp`."""
+    def __init__(self, year=None):
         fld = []
         for i in iter(_TimestampState):
             fld.append(None)
-        if fields is not None:
-            fld[0:len(fields)] = fields
         if year is not None:
             fld[_TimestampState.YEAR] = year
         self._fields = fld
@@ -748,22 +744,79 @@ class _TimestampTokens:
         self._fields[state] = val
         return val
 
-    def __eq__(self, other):
-        return isinstance(other, _TimestampTokens) and self._fields == other._fields
+    def __getitem__(self, item):
+        return self._fields[item]
 
-    def __ne__(self, other):
-        return not self.__eq__(other)
 
-    def __repr__(self):
-        out = 'TimestampTokens('
-        for i in iter(_TimestampState):
-            val = self._fields[i]
-            if val:
-                out += '%s=%s,' % (i.name, self._fields[i])
-        out += ')'
-        return out
+def _parse_timestamp(tokens):
+    """Parses each token in the given `_TimestampTokens` and marshals the numeric components into a `Timestamp`."""
+    def parse():
+        precision = TimestampPrecision.YEAR
+        off_hour = tokens[_TimestampState.OFF_HOUR]
+        off_minutes = tokens[_TimestampState.OFF_MINUTE]
+        if off_hour is not None:
+            assert off_minutes is not None
+            off_sign = -1 if _MINUS in off_hour else 1
+            off_hour = int(off_hour)
+            off_minutes = int(off_minutes) * off_sign
+            if off_sign == -1 and off_hour == 0 and off_minutes == 0:
+                # -00:00 (unknown UTC offset) is a naive datetime.
+                off_hour = None
+                off_minutes = None
+        else:
+            assert off_minutes is None
 
-    __str__ = __repr__
+        year = tokens[_TimestampState.YEAR]
+        assert year is not None
+        year = int(year)
+
+        month = tokens[_TimestampState.MONTH]
+        if month is None:
+            month = 1
+        else:
+            month = int(month)
+            precision = TimestampPrecision.MONTH
+
+        day = tokens[_TimestampState.DAY]
+        if day is None:
+            day = 1
+        else:
+            day = int(day)
+            precision = TimestampPrecision.DAY
+
+        hour = tokens[_TimestampState.HOUR]
+        minute = tokens[_TimestampState.MINUTE]
+        if hour is None:
+            assert minute is None
+            hour = 0
+            minute = 0
+        else:
+            assert minute is not None
+            hour = int(hour)
+            minute = int(minute)
+            precision = TimestampPrecision.MINUTE
+
+        second = tokens[_TimestampState.SECOND]
+        if second is None:
+            second = 0
+        else:
+            second = int(second)
+            precision = TimestampPrecision.SECOND
+
+        fraction = tokens[_TimestampState.FRACTIONAL]
+        if fraction is None:
+            microsecond = 0
+        else:
+            fraction = int(fraction)
+            microsecond = fraction * 1000  # 1000 microseconds per millisecond.
+
+        return timestamp(
+            year, month, day,
+            hour, minute, second, microsecond,
+            off_hour, off_minutes,
+            precision=precision
+        )
+    return parse
 
 
 @coroutine
@@ -788,7 +841,7 @@ def _timestamp_handler(c, ctx):
         if c not in nxt:
             _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_c(x) for x in nxt], state))
         if c in _VALUE_TERMINATORS:
-            trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, tokens)
+            trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_timestamp(tokens))
             if c == _SLASH:
                 trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         else:
