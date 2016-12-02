@@ -78,11 +78,21 @@ _BAD_GRAMMAR = (
     (b'foo-',),
     (b'%',),
     (b'n%',),
+    (b'"\n"',),
+    (b'"\\r"',),
+    (b'"\\\n\r"',),
+    (b'"\0"',),
+    (b'"\\a"',),
+    (b"'''\b'''",),
+    (b"'''\\b'''",),
     (b'{{/**/}}',),
     (b'{{//\n}}',),
     (b'{{/**/"abc"}}',),
     (b'{{"abc"//\n}}',),
     (b'{{\'\'\'abc\'\'\'//\n\'\'\'def\'\'\'}}',),
+    (b'{{"\xf6"}}',),
+    (b'{{"\n"}}',),
+    (b"{{'''\0'''}}",),
     (b'{{ abcd} }',),
     (b'{ {abcd}}', e_start_struct()),
     (b'{{\'\' \'foo\'\'\'}}',),
@@ -281,7 +291,7 @@ _GOOD = (
     (b'\'foo\'123 ', e_symbol(u'foo'), e_int(123)),
     (b'null()', e_null()) + _good_sexp(),
     (b'tru{}', e_symbol(u'tru')) + _good_struct(),
-    (b'{{"foo"}}42{{}}', e_clob(u'foo'), e_int(42), e_blob(b'')),
+    (b'{{"foo"}}42{{}}', e_clob(b'foo'), e_int(42), e_blob(b'')),
     (b'+inf"bar"', e_float(_POS_INF), e_string(u'bar')),
     (b'foo\'bar\'"baz"', e_symbol(u'foo'), e_symbol(u'bar'), e_string(u'baz')),
     (b'\'\'\'foo\'\'\'\'\'123 ', e_string(u'foo'), e_symbol(u''), e_int(123)),
@@ -338,7 +348,8 @@ _GOOD_UNICODE = (
         e_string(u'foo', field_name=u'\xf6\U0001f4a9r')
     ),
     (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(u'b\xf6\U0001f4a9r',))),
-    (u'"\t\n\r\v\f\a\b\0\'"', e_string(u'\t\n\r\v\f\a\b\0\''))
+    (u'"\t\v\f\'"', e_string(u'\t\v\f\'')),
+    (u"'''\t\v\f\"\n\r'''42 ", e_string(u'\t\v\f\"\n\r'), e_int(42))
 )
 
 _BAD_UNICODE = (
@@ -350,16 +361,17 @@ _BAD_UNICODE = (
     (u'{br\U0001f4a9r:"foo"}', e_start_struct()),
     (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\'a:"foo"}', e_start_struct()),
     (u'b\xf6\U0001f4a9r::"foo"',),
+    (u"'''\a'''",),
 )
 
 _GOOD_ESCAPES_FROM_UNICODE = (
     (u'"\\xf6"', e_string(u'\xf6')),
     (u'"\\u3000"', e_string(u'\u3000')),
     (u'["\\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
-    (u'"\\t\\n"\'\\\'\'"\\0"', e_string(u'\t\n'), e_symbol(u'\''), e_string(u'\0')),
+    (u'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(u'\''), e_string(u'\v')),
     (u'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
-    (u'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(
-        e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))
+    (u'{\'\\f\':foo,"\\?":\'\\\\\'::"\\v\\t"}',) + _good_struct(
+        e_symbol(u'foo', field_name=u'\f'), e_string(u'\v\t', field_name=u'?', annotations=(u'\\',))
     ),
     (u'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (u"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
@@ -368,7 +380,6 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'"\\\n"', e_string(u'')),
     (u'"\\\r\n"', e_string(u'')),
     (u'"\\\r"', e_string(u'')),
-    (u'"\\\n\r"', e_string(u'\r')),
     (u'"\\\r\\xf6"', e_string(u'\xf6')),
     (u'"\\\rabc"', e_string(u'abc')),
     (u"'\\\r\n'::42 ", e_int(42, annotations=(u'',))),
@@ -379,10 +390,10 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (br'"\xf6"', e_string(u'\xf6')),
     (br'"\u3000"', e_string(u'\u3000')),
     (br'["\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
-    (b'"\\t\\n"\'\\\'\'"\\0"', e_string(u'\t\n'), e_symbol(u'\''), e_string(u'\0')),
+    (b'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(u'\''), e_string(u'\v')),
     (b'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
-    (b'{\'\\a\':foo,"\\b":\'\\\\\'::"\\v\\r"}',) + _good_struct(
-        e_symbol(u'foo', field_name=u'\a'), e_string(u'\v\r', field_name=u'\b', annotations=(u'\\',))
+    (b'{\'\\f\':foo,"\\?":\'\\\\\'::"\\v\\t"}',) + _good_struct(
+        e_symbol(u'foo', field_name=u'\f'), e_string(u'\v\t', field_name=u'?', annotations=(u'\\',))
     ),
     (b'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
     (b"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
@@ -391,7 +402,6 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (b'"\\\n"', e_string(u'')),
     (b'"\\\r\n"', e_string(u'')),
     (b'"\\\r"', e_string(u'')),
-    (b'"\\\n\r"', e_string(u'\r')),
     (b'"\\\r\\xf6"', e_string(u'\xf6')),
     (b'"\\\rabc"', e_string(u'abc')),
     (b"'\\\r\n'::42 ", e_int(42, annotations=(u'',))),
@@ -616,21 +626,21 @@ _GOOD_SCALARS = (
     (b'\'\'\'ab\'\'cd\'\'\'', e_string(u'ab\'\'cd')),
 
     (b'null.clob', e_clob()),
-    (b'{{""}}', e_clob(u'')),
-    (b'{{ "abcd" }}', e_clob(u'abcd')),
-    (b'{{"abcd"}}', e_clob(u'abcd')),
-    (b'{{"abcd"\n}}', e_clob(u'abcd')),
-    (b'{{\'\'\'ab\'\'\' \'\'\'cd\'\'\'}}', e_clob(u'abcd')),
-    (b'{{\'\'\'ab\'\'\'\n\'\'\'cd\'\'\'}}', e_clob(u'abcd')),
+    (b'{{""}}', e_clob(b'')),
+    (b'{{ "abcd" }}', e_clob(b'abcd')),
+    (b'{{"abcd"}}', e_clob(b'abcd')),
+    (b'{{"abcd"\n}}', e_clob(b'abcd')),
+    (b'{{\'\'\'ab\'\'\' \'\'\'cd\'\'\'}}', e_clob(b'abcd')),
+    (b'{{\'\'\'ab\'\'\'\n\'\'\'cd\'\'\'}}', e_clob(b'abcd')),
 
     (b'null.blob', e_blob()),
     (b'{{}}', e_blob(b'')),
-    (b'{{ ab+/ }}', e_blob(b'ab+/')),
-    (b'{{ ab\n+/ }}', e_blob(b'ab+/')),
-    (b'{{ ab+= }}', e_blob(b'ab+=')),
-    (b'{{ ab\n== }}', e_blob(b'ab==')),
-    (b'{{ a b = = }}', e_blob(b'ab==')),
-    (b'{{ a== = }}', e_blob(b'a===')),
+    (b'{{ YW1heg== }}', e_blob(b'amaz')),
+    (b'{{ YW1hem8= }}', e_blob(b'amazo')),
+    (b'{{ YW1hem9u }}', e_blob(b'amazon')),
+    (b'{{ YW1heg = = }}', e_blob(b'amaz')),
+    (b'{{aW\n9u}}', e_blob(b'ion')),
+    (b'{{aW9u}}', e_blob(b'ion')),
 
     (b'null.list', e_null_list()),
 

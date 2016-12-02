@@ -17,6 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import base64
 from decimal import Decimal
 from collections import defaultdict
 from functools import partial
@@ -81,7 +82,10 @@ def _seq(s):
     return tuple(six.iterbytes(s))
 
 
-_WHITESPACE = _seq(b' \t\n\r')
+_ENCODING = 'utf-8'
+
+_WHITESPACE_NOT_NL = _seq(b' \t\v\f')
+_WHITESPACE = _WHITESPACE_NOT_NL + _seq(b'\n\r')
 _VALUE_TERMINATORS = _seq(b'{}[](),\"\' \t\n\r/')
 _SYMBOL_TOKEN_TERMINATORS = _WHITESPACE + _seq(b'/:')
 _DIGITS = _seq(b'0123456789')
@@ -134,6 +138,10 @@ _UNICODE_ESCAPE_2 = _o(b'x')
 _UNICODE_ESCAPE_4 = _o(b'u')
 _UNICODE_ESCAPE_8 = _o(b'U')
 
+_MAX_TEXT_CHAR = 0x10ffff
+_MAX_CLOB_CHAR = 0x7e
+_MIN_QUOTED_CHAR = 0x20
+
 _TRUE_SEQUENCE = _seq(b'rue')
 _FALSE_SEQUENCE = _seq(b'alse')
 _NAN_SEQUENCE = _seq(b'an')
@@ -142,30 +150,6 @@ _INF_SEQUENCE = _seq(b'inf')
 _POS_INF = float('+inf')
 _NEG_INF = float('-inf')
 _NAN = float('nan')
-
-
-def _decode(value):
-    return value.decode('utf-8')
-
-
-def _parse_number(parse_func, value, base=10):
-    def parse():
-        return parse_func(value, base)
-    return parse
-
-
-def _omit_base(parse_func, value, base, decode=False):
-    if base == 10:
-        if decode:
-            value = _decode(value)
-        return parse_func(value)
-    return parse_func(_decode(value), base)
-
-
-# In Python 2, int() returns a long if the input overflows an int.
-_parse_int = partial(_parse_number, partial(_omit_base, int))
-_parse_float = partial(_parse_number, partial(_omit_base, float))
-_parse_decimal = partial(_parse_number, partial(_omit_base, Decimal, decode=True))
 
 
 class _NullSequence:
@@ -523,6 +507,35 @@ class _SelfDelimitingTransition(Transition):
     """Signals that this transition terminates token that is self-delimiting, e.g. short string, container, comment."""
 
 
+def _decode(value):
+    return value.decode(_ENCODING)
+
+
+def _parse_number(parse_func, value, base=10):
+    def parse():
+        return parse_func(value, base)
+    return parse
+
+
+def _base_10(parse_func, value, base, decode=False):
+    assert base == 10
+    if decode:
+        value = _decode(value)
+    return parse_func(value)
+
+
+def _base_n(parse_func, value, base):
+    return parse_func(_decode(value), base)
+
+
+# In Python 2, int() returns a long if the input overflows an int.
+_parse_decimal_int = partial(_parse_number, partial(_base_10, int))
+_parse_binary_int = partial(_parse_number, partial(_base_n, int), base=2)
+_parse_hex_int = partial(_parse_number, partial(_base_n, int), base=16)
+_parse_float = partial(_parse_number, partial(_base_10, float))
+_parse_decimal = partial(_parse_number, partial(_base_10, Decimal, decode=True))
+
+
 @coroutine
 def _number_negative_start_handler(c, ctx):
     """Handles numeric values that start with a negative sign. Branches to delegate co-routines according to
@@ -547,7 +560,7 @@ def _number_zero_start_handler(c, ctx):
     ctx.value.append(c)
     c, _ = yield
     if c in _VALUE_TERMINATORS:
-        trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_int(ctx.value))
+        trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_decimal_int(ctx.value))
         if c == _SLASH:
             trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         yield trans
@@ -567,7 +580,8 @@ def _number_or_timestamp_handler(c, ctx):
     trans = ctx.immediate_transition(self)
     while True:
         if c in _VALUE_TERMINATORS:
-            trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_int(ctx.value))
+            trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR,
+                                         ctx.ion_type, _parse_decimal_int(ctx.value))
             if c == _SLASH:
                 trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         else:
@@ -655,14 +669,13 @@ def _coefficient_handler_factory(trans_table, parse_func, assertion=lambda c, ct
                                     ion_type=ion_type, append_first_if_not=append_first_if_not)
 
 
-def _radix_int_handler_factory(radix_indicators, charset, base):
+def _radix_int_handler_factory(radix_indicators, charset, parse_func):
     """Generates a handler co-routine which tokenizes a integer of a particular radix."""
     def assertion(c, ctx):
         return c in radix_indicators and \
                ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
                 (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
                ctx.ion_type == IonType.INT
-    parse_func = partial(_parse_int, base=base)
     return _numeric_handler_factory(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
                                     assertion, radix_indicators, parse_func, illegal_at_end=radix_indicators)
 
@@ -690,9 +703,10 @@ _WHOLE_NUMBER_TABLE = _whitelist(
     )
 )
 
-_whole_number_handler = _coefficient_handler_factory(_WHOLE_NUMBER_TABLE, _parse_int, append_first_if_not=_UNDERSCORE)
-_binary_int_handler = _radix_int_handler_factory(_BINARY_RADIX, _BINARY_DIGITS, 2)
-_hex_int_handler = _radix_int_handler_factory(_HEX_RADIX, _HEX_DIGITS, 16)
+_whole_number_handler = _coefficient_handler_factory(_WHOLE_NUMBER_TABLE, _parse_decimal_int,
+                                                     append_first_if_not=_UNDERSCORE)
+_binary_int_handler = _radix_int_handler_factory(_BINARY_RADIX, _BINARY_DIGITS, _parse_binary_int)
+_hex_int_handler = _radix_int_handler_factory(_HEX_RADIX, _HEX_DIGITS, _parse_hex_int)
 
 
 @coroutine
@@ -938,6 +952,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
     """Handles triple-quoted strings. Remains active until a value other than a long string is encountered."""
     assert c == _SINGLE_QUOTE
     is_clob = ctx.ion_type is IonType.CLOB
+    max_char = _MAX_CLOB_CHAR if is_clob else _MAX_TEXT_CHAR
     assert not (is_clob and is_field_name)
     if not is_clob and not is_field_name:
         ctx = ctx.derive_ion_type(IonType.STRING)
@@ -970,6 +985,9 @@ def _long_string_handler(c, ctx, is_field_name=False):
                 quotes = 0
         else:
             if in_data:
+                if c not in _WHITESPACE and (c < _MIN_QUOTED_CHAR or c > max_char):
+                    _illegal_character(c, ctx, 'Character out of range [%d, %d] for this type.'
+                                       % (_MIN_QUOTED_CHAR, max_char,))
                 # Any quotes found in the meantime are part of the data
                 val.extend([_SINGLE_QUOTE]*quotes)
                 val.append(c)
@@ -1251,14 +1269,16 @@ def _identifier_symbol_handler(c, ctx, is_field_name=False):
 
 
 def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
-                                 before=lambda ctx, is_field_name: (ctx, ctx.value, False),
+                                 before=lambda ctx, is_field_name, is_clob: (ctx, ctx.value, False),
                                  on_close=lambda ctx: None):
     """Generates handlers for quoted text tokens (either short strings or quoted symbols)."""
     @coroutine
     def quoted_text_handler(c, ctx, is_field_name=False):
         assert assertion(c)
+        is_clob = ctx.ion_type is IonType.CLOB
+        max_char = _MAX_CLOB_CHAR if is_clob else _MAX_TEXT_CHAR
         ctx = ctx.derive_unicode(quoted_text=True)
-        ctx, val, event_on_close = before(ctx, is_field_name)
+        ctx, val, event_on_close = before(ctx, is_field_name, is_clob)
         if append_first:
             val.append(c)
         c, self = yield
@@ -1271,6 +1291,9 @@ def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
                     trans = on_close(ctx)
                 else:
                     break
+            elif c not in _WHITESPACE_NOT_NL and (c < _MIN_QUOTED_CHAR or c > max_char):
+                _illegal_character(c, ctx, 'Character out of range [%d, %d] for this type.'
+                                   % (_MIN_QUOTED_CHAR, max_char,))
             else:
                 val.append(c)
             c, _ = yield trans
@@ -1280,8 +1303,7 @@ def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
 
 def _short_string_handler_factory():
     """Generates the short string (double quoted) handler."""
-    def before(ctx, is_field_name):
-        is_clob = ctx.ion_type is IonType.CLOB
+    def before(ctx, is_field_name, is_clob):
         assert not (is_clob and is_field_name)
         is_string = not is_clob and not is_field_name
         if is_string:
@@ -1350,6 +1372,17 @@ def _struct_or_lob_handler(c, ctx):
     yield ctx.immediate_transition(_STRUCT_OR_LOB_TABLE[c](c, ctx))
 
 
+_to_bytes = six.binary_type if six.PY2 else partial(six.binary_type, encoding=_ENCODING)
+
+
+def _parse_lob(ion_type, value):
+    def parse():
+        if ion_type is IonType.CLOB:
+            return _to_bytes(value.value)
+        return base64.b64decode(value)
+    return parse
+
+
 @coroutine
 def _lob_start_handler(c, ctx):
     """Handles tokens that begin with two open braces."""
@@ -1402,7 +1435,8 @@ def _lob_end_handler_factory(ion_type, action, validate=lambda c, ctx, action_re
                 action_res = action(c, ctx, prev, is_self_delimited, action_res, False)
             prev = c
             c, _ = yield trans
-        yield ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, val, trans_cls=_SelfDelimitingTransition)
+        yield ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ion_type,
+                                   _parse_lob(ion_type, val), trans_cls=_SelfDelimitingTransition)
     return lob_end_handler
 
 
