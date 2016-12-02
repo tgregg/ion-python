@@ -26,7 +26,8 @@ import sys
 from amazon.ion.core import timestamp, TimestampPrecision
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
-from amazon.ion.reader_text import reader, _TimestampTokens, _POS_INF, _NEG_INF, _NAN
+from amazon.ion.reader_text import reader, _POS_INF, _NEG_INF, _NAN
+from amazon.ion.symbols import SymbolToken
 from amazon.ion.util import coroutine
 from tests import listify, parametrize
 from tests.event_aliases import *
@@ -36,6 +37,7 @@ _P = ReaderParameter
 _ts = timestamp
 _tp = TimestampPrecision
 _d = Decimal
+_st = partial(SymbolToken, sid=None, location=None)
 
 _BAD_GRAMMAR = (
     (b'+1',),
@@ -106,10 +108,10 @@ _BAD_GRAMMAR = (
     (b'{{====}}',),
     (b'{{abcd====}}',),
     (b'{{abc*}}',),
-    (b'{foo:bar/**/baz:zar}', e_start_struct(), e_symbol(value=u'bar', field_name=u'foo')),
-    (b'{foo:bar/**/baz}', e_start_struct(), e_symbol(value=u'bar', field_name=u'foo')),
-    (b'[abc 123]', e_start_list(), e_symbol(value=u'abc')),
-    (b'[abc/**/def]', e_start_list(), e_symbol(value=u'abc')),
+    (b'{foo:bar/**/baz:zar}', e_start_struct(), e_symbol(value=_st(u'bar'), field_name=_st(u'foo'))),
+    (b'{foo:bar/**/baz}', e_start_struct(), e_symbol(value=_st(u'bar'), field_name=_st(u'foo'))),
+    (b'[abc 123]', e_start_list(), e_symbol(value=_st(u'abc'))),
+    (b'[abc/**/def]', e_start_list(), e_symbol(value=_st(u'abc'))),
     (b'{abc:}', e_start_struct()),
     (b'{abc :}', e_start_struct()),
     (b'{abc : //\n}', e_start_struct()),
@@ -132,7 +134,7 @@ _BAD_GRAMMAR = (
     (b'{foo}', e_start_struct()),
     (b'{123}', e_start_struct()),
     (b'{42, 43}', e_start_struct()),
-    (b'[abc, , 123]', e_start_list(), e_symbol(value=u'abc')),
+    (b'[abc, , 123]', e_start_list(), e_symbol(value=_st(u'abc'))),
     (b'[\'\'\'abc\'\'\'\'\']', e_start_list()),
     (b'[\'\'\'abc\'\'\'\'foo\']', e_start_list()),
     (b'[\'\'\'abc\'\'\'\'\', def]', e_start_list()),
@@ -141,7 +143,7 @@ _BAD_GRAMMAR = (
     (b'[,]', e_start_list()),
     (b'(,)', e_start_sexp()),
     (b'{,}', e_start_struct()),
-    (b'{foo:bar, ,}', e_start_struct(), e_symbol(value=u'bar', field_name=u'foo')),
+    (b'{foo:bar, ,}', e_start_struct(), e_symbol(value=_st(u'bar'), field_name=_st(u'foo'))),
     (b'{true:123}', e_start_struct()),
     (b'{false:123}', e_start_struct()),
     (b'{+inf:123}', e_start_struct()),
@@ -190,12 +192,12 @@ _INCOMPLETE = (
     (b'(', e_start_sexp()),
     (b'[[]', e_start_list(), e_start_list(), e_end_list()),
     (b'(()', e_start_sexp(), e_start_sexp(), e_end_sexp()),
-    (b'{foo:{}', e_start_struct(), e_start_struct(field_name=u'foo'), e_end_struct()),
+    (b'{foo:{}', e_start_struct(), e_start_struct(field_name=_st(u'foo')), e_end_struct()),
     (b'{foo:bar', e_start_struct(),),
     (b'{foo:bar::', e_start_struct(),),
-    (b'{foo:bar,', e_start_struct(), e_symbol(value=u'bar', field_name=u'foo')),
+    (b'{foo:bar,', e_start_struct(), e_symbol(_st(u'bar'), field_name=_st(u'foo'))),
     (b'[[],', e_start_list(), e_start_list(), e_end_list()),
-    (b'{foo:{},', e_start_struct(), e_start_struct(field_name=u'foo'), e_end_struct()),
+    (b'{foo:{},', e_start_struct(), e_start_struct(field_name=_st(u'foo')), e_end_struct()),
     (b'foo',),  # Might be an annotation.
     (b'\'foo\'',),  # Might be an annotation.
     (b'\'\'\'foo\'\'\'/**/',),  # Might be followed by another triple-quoted string.
@@ -236,8 +238,8 @@ _INCOMPLETE = (
     (b'{foo', e_start_struct()),
     (b'{{',),
     (b'{{"',),
-    (b'(foo-', e_start_sexp(), e_symbol(value=u'foo')),
-    (b'(-foo', e_start_sexp(), e_symbol(value=u'-')),
+    (b'(foo-', e_start_sexp(), e_symbol(_st(u'foo'))),
+    (b'(-foo', e_start_sexp(), e_symbol(_st(u'-'))),
 )
 
 _SKIP = (
@@ -245,10 +247,10 @@ _SKIP = (
     [(e_read(b'[]'), e_start_list()), (SKIP, e_end_list()), (NEXT, END)],
     [(e_read(b'{//\n}'), e_start_struct()), (SKIP, e_end_struct()), (NEXT, END)],
     [(e_read(b'(/**/)'), e_start_sexp()), (SKIP, e_end_sexp()), (NEXT, END)],
-    [(e_read(b'[a,b,c]'), e_start_list()), (NEXT, e_symbol(u'a')), (SKIP, e_end_list()), (NEXT, END)],
+    [(e_read(b'[a,b,c]'), e_start_list()), (NEXT, e_symbol(_st(u'a'))), (SKIP, e_end_list()), (NEXT, END)],
     [
         (e_read(b'{c:a,d:e::b}'), e_start_struct()),
-        (NEXT, e_symbol(u'a', field_name=u'c')),
+        (NEXT, e_symbol(_st(u'a'), field_name=_st(u'c'))),
         (SKIP, e_end_struct()), (NEXT, END)
     ],
     [
@@ -288,14 +290,14 @@ _good_list = partial(_good_container, e_start_list, e_end_list)
 
 _GOOD = (
     (b'42[]', e_int(42)) + _good_list(),
-    (b'\'foo\'123 ', e_symbol(u'foo'), e_int(123)),
+    (b'\'foo\'123 ', e_symbol(_st(u'foo')), e_int(123)),
     (b'null()', e_null()) + _good_sexp(),
-    (b'tru{}', e_symbol(u'tru')) + _good_struct(),
+    (b'tru{}', e_symbol(_st(u'tru'))) + _good_struct(),
     (b'{{"foo"}}42{{}}', e_clob(b'foo'), e_int(42), e_blob(b'')),
     (b'+inf"bar"', e_float(_POS_INF), e_string(u'bar')),
-    (b'foo\'bar\'"baz"', e_symbol(u'foo'), e_symbol(u'bar'), e_string(u'baz')),
-    (b'\'\'\'foo\'\'\'\'\'123 ', e_string(u'foo'), e_symbol(u''), e_int(123)),
-    (b'\'\'\'foo\'\'\'\'abc\'123 ', e_string(u'foo'), e_symbol(u'abc'), e_int(123)),
+    (b'foo\'bar\'"baz"', e_symbol(_st(u'foo')), e_symbol(_st(u'bar')), e_string(u'baz')),
+    (b'\'\'\'foo\'\'\'\'\'123 ', e_string(u'foo'), e_symbol(_st(u'')), e_int(123)),
+    (b'\'\'\'foo\'\'\'\'abc\'123 ', e_string(u'foo'), e_symbol(_st(u'abc')), e_int(123)),
     (b'[]',) + _good_list(),
     (b'()',) + _good_sexp(),
     (b'{}',) + _good_struct(),
@@ -308,46 +310,46 @@ _GOOD = (
     (b'{/**///\n}',) + _good_struct(),
     (b'(/**///\n)',) + _good_sexp(),
     (b'[/**///\n]',) + _good_list(),
-    (b'(foo)',) + _good_sexp(e_symbol(u'foo')),
-    (b'[foo]',) + _good_list(e_symbol(u'foo')),
-    (b'(\'\')',) + _good_sexp(e_symbol(u'')),
-    (b'[\'\']',) + _good_list(e_symbol(u'')),
-    (b'(\'foo\')',) + _good_sexp(e_symbol(u'foo')),
-    (b'[\'foo\']',) + _good_list(e_symbol(u'foo')),
+    (b'(foo)',) + _good_sexp(e_symbol(_st(u'foo'))),
+    (b'[foo]',) + _good_list(e_symbol(_st(u'foo'))),
+    (b'(\'\')',) + _good_sexp(e_symbol(_st(u''))),
+    (b'[\'\']',) + _good_list(e_symbol(_st(u''))),
+    (b'(\'foo\')',) + _good_sexp(e_symbol(_st(u'foo'))),
+    (b'[\'foo\']',) + _good_list(e_symbol(_st(u'foo'))),
     (b'/*foo*///bar\n/*baz*/',),
     (b'/*\\n*///\\u3000\n',),
-    (b'\'\'::123 ', e_int(123, annotations=(u'',))),
+    (b'\'\'::123 ', e_int(123, annotations=(_st(u''),))),
     (b'{foo:zar::[], bar: (), baz:{}}',) + _good_struct(
-        e_start_list(field_name=u'foo', annotations=(u'zar',)), e_end_list(),
-        e_start_sexp(field_name=u'bar'), e_end_sexp(),
-        e_start_struct(field_name=u'baz'), e_end_struct()
+        e_start_list(field_name=_st(u'foo'), annotations=(_st(u'zar'),)), e_end_list(),
+        e_start_sexp(field_name=_st(u'bar')), e_end_sexp(),
+        e_start_struct(field_name=_st(u'baz')), e_end_struct()
     ),
     (b'[[], zar::{}, ()]',) + _good_list(
         e_start_list(), e_end_list(),
-        e_start_struct(annotations=(u'zar',)), e_end_struct(),
+        e_start_struct(annotations=(_st(u'zar'),)), e_end_struct(),
         e_start_sexp(), e_end_sexp(),
     ),
-    (b'{\'\':bar,}',) + _good_struct(e_symbol(field_name=u'', value=u'bar')),
-    (b'{\'\':bar}',) + _good_struct(e_symbol(field_name=u'', value=u'bar')),
-    (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(field_name=u'foobar', value=u'baz'))
+    (b'{\'\':bar,}',) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u''))),
+    (b'{\'\':bar}',) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u''))),
+    (b'{\'\'\'foo\'\'\'/**/\'\'\'bar\'\'\':baz}',) + _good_struct(e_symbol(_st(u'baz'), field_name=_st(u'foobar')))
 )
 
 
 _GOOD_UNICODE = (
-    (u'{foo:bar}',) + _good_struct(e_symbol(u'bar', field_name=u'foo')),
-    (u'{foo:"b\xf6\u3000r"}',) + _good_struct(e_string(u'b\xf6\u3000r', field_name=u'foo')),
-    (u'{\'b\xf6\u3000r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\u3000r')),
+    (u'{foo:bar}',) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u'foo'))),
+    (u'{foo:"b\xf6\u3000r"}',) + _good_struct(e_string(u'b\xf6\u3000r', field_name=_st(u'foo'))),
+    (u'{\'b\xf6\u3000r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=_st(u'b\xf6\u3000r'))),
     (u'\x7b\x7d',) + _good_struct(),
     (u'\u005b\u005d',) + _good_list(),
     (u'\u0028\x29',) + _good_sexp(),
     (u'\u0022\u0061\u0062\u0063\u0022', e_string(u'abc')),
-    (u'{foo:"b\xf6\U0001f4a9r"}',) + _good_struct(e_string(u'b\xf6\U0001f4a9r', field_name=u'foo')),
-    (u'{\'b\xf6\U0001f4a9r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
-    (u'{"b\xf6\U0001f4a9r\":"foo"}',) + _good_struct(e_string(u'foo', field_name=u'b\xf6\U0001f4a9r')),
+    (u'{foo:"b\xf6\U0001f4a9r"}',) + _good_struct(e_string(u'b\xf6\U0001f4a9r', field_name=_st(u'foo'))),
+    (u'{\'b\xf6\U0001f4a9r\':"foo"}',) + _good_struct(e_string(u'foo', field_name=_st(u'b\xf6\U0001f4a9r'))),
+    (u'{"b\xf6\U0001f4a9r\":"foo"}',) + _good_struct(e_string(u'foo', field_name=_st(u'b\xf6\U0001f4a9r'))),
     (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\':"foo"}',) + _good_struct(
-        e_string(u'foo', field_name=u'\xf6\U0001f4a9r')
+        e_string(u'foo', field_name=_st(u'\xf6\U0001f4a9r'))
     ),
-    (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(u'b\xf6\U0001f4a9r',))),
+    (u'\'b\xf6\U0001f4a9r\'::"foo"', e_string(u'foo', annotations=(_st(u'b\xf6\U0001f4a9r'),))),
     (u'"\t\v\f\'"', e_string(u'\t\v\f\'')),
     (u"'''\t\v\f\"\n\r'''42 ", e_string(u'\t\v\f\"\n\r'), e_int(42))
 )
@@ -368,55 +370,55 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'"\\xf6"', e_string(u'\xf6')),
     (u'"\\u3000"', e_string(u'\u3000')),
     (u'["\\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
-    (u'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(u'\''), e_string(u'\v')),
-    (u'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
+    (u'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(_st(u'\'')), e_string(u'\v')),
+    (u'(\'\\/\')',) + _good_sexp(e_symbol(_st(u'/'))),
     (u'{\'\\f\':foo,"\\?":\'\\\\\'::"\\v\\t"}',) + _good_struct(
-        e_symbol(u'foo', field_name=u'\f'), e_string(u'\v\t', field_name=u'?', annotations=(u'\\',))
+        e_symbol(_st(u'foo'), field_name=_st(u'\f')), e_string(u'\v\t', field_name=_st(u'?'), annotations=(_st(u'\\'),))
     ),
-    (u'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
+    (u'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(_st(u'?\f'), _st(u'\xf6')))),
     (u"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (u"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
-    (u"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(42)),
+    (u"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(_st(u'\U0001f4a9')), e_int(42)),
     (u'"\\\n"', e_string(u'')),
     (u'"\\\r\n"', e_string(u'')),
     (u'"\\\r"', e_string(u'')),
     (u'"\\\r\\xf6"', e_string(u'\xf6')),
     (u'"\\\rabc"', e_string(u'abc')),
-    (u"'\\\r\n'::42 ", e_int(42, annotations=(u'',))),
-    (u"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(u'bar', field_name=u'foo\r'))
+    (u"'\\\r\n'::42 ", e_int(42, annotations=(_st(u''),))),
+    (u"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u'foo\r')))
 )
 
 _GOOD_ESCAPES_FROM_BYTES = (
     (br'"\xf6"', e_string(u'\xf6')),
     (br'"\u3000"', e_string(u'\u3000')),
     (br'["\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
-    (b'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(u'\''), e_string(u'\v')),
-    (b'(\'\\/\')',) + _good_sexp(e_symbol(u'/')),
+    (b'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(_st(u'\'')), e_string(u'\v')),
+    (b'(\'\\/\')',) + _good_sexp(e_symbol(_st(u'/'))),
     (b'{\'\\f\':foo,"\\?":\'\\\\\'::"\\v\\t"}',) + _good_struct(
-        e_symbol(u'foo', field_name=u'\f'), e_string(u'\v\t', field_name=u'?', annotations=(u'\\',))
+        e_symbol(_st(u'foo'), field_name=_st(u'\f')), e_string(u'\v\t', field_name=_st(u'?'), annotations=(_st(u'\\'),))
     ),
-    (b'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(u'?\f', u'\xf6'))),
+    (b'\'\\?\\f\'::\'\\xF6\'::"\\\""', e_string(u'"', annotations=(_st(u'?\f'), _st(u'\xf6')))),
     (b"'''\\\'\\\'\\\''''\"\\\'\"", e_string(u"'''"), e_string(u"'")),
     (b"'''a''\\\'b'''\n'''\\\''''/**/''''\'c'''\"\"", e_string(u"a'''b'''c"), e_string(u'')),
-    (b"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(u'\U0001f4a9'), e_int(42)),
+    (b"'''foo''''\\U0001f4a9'42 ", e_string(u'foo'), e_symbol(_st(u'\U0001f4a9')), e_int(42)),
     (b'"\\\n"', e_string(u'')),
     (b'"\\\r\n"', e_string(u'')),
     (b'"\\\r"', e_string(u'')),
     (b'"\\\r\\xf6"', e_string(u'\xf6')),
     (b'"\\\rabc"', e_string(u'abc')),
-    (b"'\\\r\n'::42 ", e_int(42, annotations=(u'',))),
-    (b"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(u'bar', field_name=u'foo\r'))
+    (b"'\\\r\n'::42 ", e_int(42, annotations=(_st(u''),))),
+    (b"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u'foo\r')))
 )
 
 _INCOMPLETE_ESCAPES = (
     [(e_read(u'"\\'), INC), (e_read(u't"'), e_string(u'\t')), (NEXT, END)],
     [
-        (e_read(u'\'\\x'), INC), (e_read(u'f'), INC), (e_read(u'6\'42 '), e_symbol(u'\xf6')),
+        (e_read(u'\'\\x'), INC), (e_read(u'f'), INC), (e_read(u'6\'42 '), e_symbol(_st(u'\xf6'))),
         (NEXT, e_int(42)), (NEXT, END)
     ],
     [
         (e_read(u'{"\\U0001'), e_start_struct()), (NEXT, INC), (e_read(u'f4a9"'), INC),
-        (e_read(u':bar}'), e_symbol(u'bar', field_name=u'\U0001f4a9')), (NEXT, e_end_struct()), (NEXT, END)
+        (e_read(u':bar}'), e_symbol(_st(u'bar'), field_name=_st(u'\U0001f4a9'))), (NEXT, e_end_struct()), (NEXT, END)
     ],
     [
         (e_read(u"'''\\\r"), INC), (e_read(u"\n'''//\n"), INC), (e_read(u"'''abc'''42 "), e_string(u'abc')),
@@ -437,10 +439,10 @@ _BAD_ESCAPES_FROM_UNICODE = (
     (u'\'\\q\'',),
     (u'\\t',),
     (u'"abc"\\t', e_string(u'abc')),
-    (u'\'abc\'\\n', e_symbol(u'abc')),
-    (u'\'abc\'\\xf6', e_symbol(u'abc')),
+    (u'\'abc\'\\n', e_symbol(_st(u'abc'))),
+    (u'\'abc\'\\xf6', e_symbol(_st(u'abc'))),
     (u"'''abc'''\\U0001f4a9", e_string(u'abc')),
-    (u"''\\u3000", e_symbol(u'')),
+    (u"''\\u3000", e_symbol(_st(u''))),
     (u"'''\\u3''' '''000'''42 ",),
     (u'"\\U0001f4aQ"',),
     (u"{{'''abc'''\\n}}",),
@@ -454,10 +456,10 @@ _BAD_ESCAPES_FROM_BYTES = (
     (br'\'\q\'',),
     (b'\\t',),
     (b'"abc"\\t', e_string(u'abc')),
-    (b'\'abc\'\\n', e_symbol(u'abc')),
-    (b'\'abc\'\\xf6', e_symbol(u'abc')),
+    (b'\'abc\'\\n', e_symbol(_st(u'abc'))),
+    (b'\'abc\'\\xf6', e_symbol(_st(u'abc'))),
     (b"'''abc'''\\U0001f4a9", e_string(u'abc')),
-    (b"''\\u3000", e_symbol(u'')),
+    (b"''\\u3000", e_symbol(_st(u''))),
     (b"'''\\u3''' '''000'''42 ",),
     (b'"\\U0001f4aQ"',),
     (b"{{'''abc'''\\n}}",),
@@ -466,68 +468,69 @@ _BAD_ESCAPES_FROM_BYTES = (
     (b'{\'\'\'foo\'\'\'\\xf6:bar}', e_start_struct()),
 )
 
-
 _UNSPACED_SEXPS = (
-    (b'(a/b)',) + _good_sexp(e_symbol(u'a'), e_symbol(u'/'), e_symbol(u'b')),
-    (b'(a+b)',) + _good_sexp(e_symbol(u'a'), e_symbol(u'+'), e_symbol(u'b')),
-    (b'(a-b)',) + _good_sexp(e_symbol(u'a'), e_symbol(u'-'), e_symbol(u'b')),
-    (b'(/%)',) + _good_sexp(e_symbol(u'/%')),
-    (b'(foo //bar\n::baz)',) + _good_sexp(e_symbol(value=u'baz', annotations=(u'foo',))),
-    (b'(foo/*bar*/ ::baz)',) + _good_sexp(e_symbol(value=u'baz', annotations=(u'foo',))),
-    (b'(\'a b\' //\n::cd)',) + _good_sexp(e_symbol(value=u'cd', annotations=(u'a b',))),
-    (b'(abc//baz\n-)',) + _good_sexp(e_symbol(u'abc'), e_symbol(u'-')),
+    (b'(a/b)',) + _good_sexp(e_symbol(_st(u'a')), e_symbol(_st(u'/')), e_symbol(_st(u'b'))),
+    (b'(a+b)',) + _good_sexp(e_symbol(_st(u'a')), e_symbol(_st(u'+')), e_symbol(_st(u'b'))),
+    (b'(a-b)',) + _good_sexp(e_symbol(_st(u'a')), e_symbol(_st(u'-')), e_symbol(_st(u'b'))),
+    (b'(/%)',) + _good_sexp(e_symbol(_st(u'/%'))),
+    (b'(foo //bar\n::baz)',) + _good_sexp(e_symbol(_st(u'baz'), annotations=(_st(u'foo'),))),
+    (b'(foo/*bar*/ ::baz)',) + _good_sexp(e_symbol(_st(u'baz'), annotations=(_st(u'foo'),))),
+    (b'(\'a b\' //\n::cd)',) + _good_sexp(e_symbol(_st(u'cd'), annotations=(_st(u'a b'),))),
+    (b'(abc//baz\n-)',) + _good_sexp(e_symbol(_st(u'abc')), e_symbol(_st(u'-'))),
     (b'(null-100/**/)',) + _good_sexp(e_null(), e_int(-100)),
     (b'(//\nnull//\n)',) + _good_sexp(e_null()),
-    (b'(abc/*baz*/123)',) + _good_sexp(e_symbol(u'abc'), e_int(123)),
-    (b'(abc/*baz*/-)',) + _good_sexp(e_symbol(u'abc'), e_symbol(u'-')),
-    (b'(abc//baz\n123)',) + _good_sexp(e_symbol(u'abc'), e_int(123)),
-    (b'(foo%+null-//\n)',) + _good_sexp(e_symbol(u'foo'), e_symbol(u'%+'), e_null(), e_symbol(u'-//')),  # Matches java.
+    (b'(abc/*baz*/123)',) + _good_sexp(e_symbol(_st(u'abc')), e_int(123)),
+    (b'(abc/*baz*/-)',) + _good_sexp(e_symbol(_st(u'abc')), e_symbol(_st(u'-'))),
+    (b'(abc//baz\n123)',) + _good_sexp(e_symbol(_st(u'abc')), e_int(123)),
+    (b'(foo%+null-//\n)',) + _good_sexp(
+        e_symbol(_st(u'foo')), e_symbol(_st(u'%+')), e_null(), e_symbol(_st(u'-//'))  # Matches java.
+    ),
     (b'(null-100)',) + _good_sexp(e_null(), e_int(-100)),
-    (b'(null\'a\')',) + _good_sexp(e_null(), e_symbol(u'a')),
-    (b'(null\'a\'::b)',) + _good_sexp(e_null(), e_symbol(value=u'b', annotations=(u'a',))),
-    (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(u'.'), e_symbol(u'b')),
-    (b'(\'\'\'abc\'\'\'\'\')',) + _good_sexp(e_string(u'abc'), e_symbol(u'')),
-    (b'(\'\'\'abc\'\'\'\'foo\')',) + _good_sexp(e_string(u'abc'), e_symbol(u'foo')),
-    (b'(\'\'\'abc\'\'\'\'\'42)',) + _good_sexp(e_string(u'abc'), e_symbol(u''), e_int(42)),
-    (b'(42\'a\'::b)',) + _good_sexp(e_int(42), e_symbol(value=u'b', annotations=(u'a',))),
+    (b'(null\'a\')',) + _good_sexp(e_null(), e_symbol(_st(u'a'))),
+    (b'(null\'a\'::b)',) + _good_sexp(e_null(), e_symbol(_st(u'b'), annotations=(_st(u'a'),))),
+    (b'(null.string.b)',) + _good_sexp(e_string(None), e_symbol(_st(u'.')), e_symbol(_st(u'b'))),
+    (b'(\'\'\'abc\'\'\'\'\')',) + _good_sexp(e_string(u'abc'), e_symbol(_st(u''))),
+    (b'(\'\'\'abc\'\'\'\'foo\')',) + _good_sexp(e_string(u'abc'), e_symbol(_st(u'foo'))),
+    (b'(\'\'\'abc\'\'\'\'\'42)',) + _good_sexp(e_string(u'abc'), e_symbol(_st(u'')), e_int(42)),
+    (b'(42\'a\'::b)',) + _good_sexp(e_int(42), e_symbol(_st(u'b'), annotations=(_st(u'a'),))),
     (b'(1.23[])',) + _good_sexp(e_decimal(_d(u'1.23')), e_start_list(), e_end_list()),
-    (b'(\'\'\'foo\'\'\'/\'\'\'bar\'\'\')',) + _good_sexp(e_string(u'foo'), e_symbol(u'/'), e_string(u'bar')),
+    (b'(\'\'\'foo\'\'\'/\'\'\'bar\'\'\')',) + _good_sexp(e_string(u'foo'), e_symbol(_st(u'/')), e_string(u'bar')),
     (b'(-100)',) + _good_sexp(e_int(-100)),
-    (b'(-1.23 .)',) + _good_sexp(e_decimal(_d(u'-1.23')), e_symbol(u'.')),
+    (b'(-1.23 .)',) + _good_sexp(e_decimal(_d(u'-1.23')), e_symbol(_st(u'.'))),
     (b'(1.)',) + _good_sexp(e_decimal(_d(u'1.'))),
-    (b'(1. .1)',) + _good_sexp(e_decimal(_d(u'1.')), e_symbol(u'.'), e_int(1)),
-    (b'(2001-01-01/**/a)',) + _good_sexp(e_timestamp(_ts(2001, 1, 1, precision=_tp.DAY)), e_symbol(u'a')),
-    (b'(nul)',) + _good_sexp(e_symbol(u'nul')),
-    (b'(foo::%-bar)',) + _good_sexp(e_symbol(value=u'%-', annotations=(u'foo',)), e_symbol(u'bar')),
-    (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(u'.'), e_symbol(u'False'), e_symbol(u'+')),
+    (b'(1. .1)',) + _good_sexp(e_decimal(_d(u'1.')), e_symbol(_st(u'.')), e_int(1)),
+    (b'(2001-01-01/**/a)',) + _good_sexp(e_timestamp(_ts(2001, 1, 1, precision=_tp.DAY)), e_symbol(_st(u'a'))),
+    (b'(nul)',) + _good_sexp(e_symbol(_st(u'nul'))),
+    (b'(foo::%-bar)',) + _good_sexp(e_symbol(_st(u'%-'), annotations=(_st(u'foo'),)), e_symbol(_st(u'bar'))),
+    (b'(true.False+)',) + _good_sexp(e_bool(True), e_symbol(_st(u'.')), e_symbol(_st(u'False')), e_symbol(_st(u'+'))),
     (b'(false)',) + _good_sexp(e_bool(False)),
     (b'(-inf)',) + _good_sexp(e_float(_NEG_INF)),
     (b'(+inf)',) + _good_sexp(e_float(_POS_INF)),
     (b'(nan)',) + _good_sexp(e_float(_NAN)),
     (b'(-inf+inf)',) + _good_sexp(e_float(_NEG_INF), e_float(_POS_INF)),
-    (b'(+inf\'foo\')',) + _good_sexp(e_float(_POS_INF), e_symbol(u'foo')),
-    (b'(-inf\'foo\'::bar)',) + _good_sexp(e_float(_NEG_INF), e_symbol(value=u'bar', annotations=(u'foo',))),
+    (b'(+inf\'foo\')',) + _good_sexp(e_float(_POS_INF), e_symbol(_st(u'foo'))),
+    (b'(-inf\'foo\'::bar)',) + _good_sexp(e_float(_NEG_INF), e_symbol(_st(u'bar'), annotations=(_st(u'foo'),))),
     # TODO the inf tests do not match ion-java's behavior. They should be reconciled. I believe this is more correct.
     (b'(- -inf-inf-in-infs-)',) + _good_sexp(
-        e_symbol(u'-'), e_float(_NEG_INF), e_float(_NEG_INF), e_symbol(u'-'),
-        e_symbol(u'in'), e_symbol(u'-'), e_symbol(u'infs'), e_symbol(u'-')
+        e_symbol(_st(u'-')), e_float(_NEG_INF), e_float(_NEG_INF), e_symbol(_st(u'-')),
+        e_symbol(_st(u'in')), e_symbol(_st(u'-')), e_symbol(_st(u'infs')), e_symbol(_st(u'-'))
     ),
     (b'(+ +inf+inf+in+infs+)',) + _good_sexp(
-        e_symbol(u'+'), e_float(_POS_INF), e_float(_POS_INF), e_symbol(u'+'),
-        e_symbol(u'in'), e_symbol(u'+'), e_symbol(u'infs'), e_symbol(u'+')
+        e_symbol(_st(u'+')), e_float(_POS_INF), e_float(_POS_INF), e_symbol(_st(u'+')),
+        e_symbol(_st(u'in')), e_symbol(_st(u'+')), e_symbol(_st(u'infs')), e_symbol(_st(u'+'))
     ),
     (b'(nan-nan+nan)',) + _good_sexp(
-        e_float(_NAN), e_symbol(u'-'), e_float(_NAN), e_symbol(u'+'),
+        e_float(_NAN), e_symbol(_st(u'-')), e_float(_NAN), e_symbol(_st(u'+')),
         e_float(_NAN)
     ),
     (b'(nans-inf+na-)',) + _good_sexp(
-        e_symbol(u'nans'), e_float(_NEG_INF), e_symbol(u'+'),
-        e_symbol(u'na'), e_symbol(u'-')
+        e_symbol(_st(u'nans')), e_float(_NEG_INF), e_symbol(_st(u'+')),
+        e_symbol(_st(u'na')), e_symbol(_st(u'-'))
     ),
     (b'({}()zar::[])',) + _good_sexp(
         e_start_struct(), e_end_struct(),
         e_start_sexp(), e_end_sexp(),
-        e_start_list(annotations=(u'zar',)), e_end_list()
+        e_start_list(annotations=(_st(u'zar'),)), e_end_list()
     ),
 )
 
@@ -615,10 +618,10 @@ _GOOD_SCALARS = (
     (b'2016-02-29T', e_timestamp(_ts(2016, 2, 29, precision=_tp.DAY))),
 
     (b'null.symbol', e_symbol()),
-    (b'nul', e_symbol(u'nul')),  # See the logic in the event generators that forces these to emit an event.
-    (b'$foo', e_symbol(u'$foo')),
-    (b'\'a b\'', e_symbol(u'a b')),
-    (b'\'\'', e_symbol(u'')),
+    (b'nul', e_symbol(_st(u'nul'))),  # See the logic in the event generators that forces these to emit an event.
+    (b'$foo', e_symbol(_st(u'$foo'))),
+    (b'\'a b\'', e_symbol(_st(u'a b'))),
+    (b'\'\'', e_symbol(_st(u''))),
 
     (b'null.string', e_string()),
     (b'" "', e_string(u' ')),
@@ -761,15 +764,15 @@ _TEST_SYMBOLS = (
         b'\'\\U0001f4a9\'',
     ),
     (
-        u'foo',
-        u'$foo',
-        u'a b',
-        u'foo',
-        u'a b',
-        u'foo',
-        u'a b',
-        u'',
-        u'\U0001f4a9',
+        _st(u'foo'),
+        _st(u'$foo'),
+        _st(u'a b'),
+        _st(u'foo'),
+        _st(u'a b'),
+        _st(u'foo'),
+        _st(u'a b'),
+        _st(u''),
+        _st(u'\U0001f4a9'),
     )
 )
 
@@ -787,14 +790,14 @@ _TEST_FIELD_NAMES = (
     ),
     _TEST_SYMBOLS[1] +
     (
-        u'foo',
-        u'foo',
-        u'foobaz',
-        u'foobaz',
-        u'a b',
-        u'a b',
-        u'',
-        u'\xf6',
+        _st(u'foo'),
+        _st(u'foo'),
+        _st(u'foobaz'),
+        _st(u'foobaz'),
+        _st(u'a b'),
+        _st(u'a b'),
+        _st(u''),
+        _st(u'\xf6'),
     )
 )
 

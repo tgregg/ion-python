@@ -29,6 +29,7 @@ from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_
     IonEventType, IonThunkEvent, TimestampPrecision, timestamp
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr
+from amazon.ion.symbols import SymbolToken
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
 
 _o = six.byte2int
@@ -251,28 +252,27 @@ class _CodePointHolder:
 class CodePointArray(collections.MutableSequence):
     """A mutable sequence of code points. Used in place of bytearray() for text values."""
     def __init__(self, initial_bytes=None):
-        self.value = u''
+        self.__text = u''
         if initial_bytes is not None:
             for b in initial_bytes:
                 self.append(b)
 
     def append(self, value):
-        self.value += _c(value)
+        self.__text += _c(value)
 
-    def __eq__(self, other):
-        return other == self.value
+    def as_symbol(self):
+        return SymbolToken(self.__text, sid=None, location=None)
 
-    def __ne__(self, other):
-        return not self.__eq__(other)
+    def as_text(self):
+        return self.__text
 
     def __len__(self):
-        return len(self.value)
-
-    def __str__(self):
-        return self.value
+        return len(self.__text)
 
     def __repr__(self):
-        return self.value
+        return 'CodePointArray(text=%s)' % (self.__text,)
+
+    __str__ = __repr__
 
     def insert(self, index, value):
         raise ValueError('Attempted to add code point in middle of sequence')
@@ -281,7 +281,7 @@ class CodePointArray(collections.MutableSequence):
         raise ValueError('Attempted to set code point in middle of sequence')
 
     def __getitem__(self, index):
-        return self.value[index]
+        return self.__text[index]
 
     def __delitem__(self, index):
         raise ValueError('Attempted to delete from code point sequence.')
@@ -446,12 +446,12 @@ class _HandlerContext(record(
         """Derives a context which appends the current context's pending_symbol to its annotations sequence."""
         assert self.pending_symbol is not None
         assert not self.value
-        annotations = (self.pending_symbol, )  # pending_symbol becomes an annotation
+        annotations = (self.pending_symbol.as_symbol(),)  # pending_symbol becomes an annotation
         return _HandlerContext(
             self.container,
             self.queue,
             self.field_name,
-            self.annotations and self.annotations + annotations or annotations,
+            annotations if not self.annotations else self.annotations + annotations,
             self.depth,
             self.whence,
             self.value,
@@ -466,7 +466,7 @@ class _HandlerContext(record(
         return _HandlerContext(
             self.container,
             self.queue,
-            self.pending_symbol,  # pending_symbol becomes field name
+            self.pending_symbol.as_symbol(),  # pending_symbol becomes field name
             self.annotations,
             self.depth,
             self.whence,
@@ -1003,7 +1003,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
                         if ctx.container.is_delimited:
                             _illegal_character(c, ctx, 'Delimiter %s not found after value.'
                                                % (_c(ctx.container.delimiter[0]),))
-                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value.as_text())
                         # c was read as a single byte. Re-read it as a code point.
                         ctx.queue.unread(c)
                         c, _ = yield here_in_data
@@ -1020,7 +1020,8 @@ def _long_string_handler(c, ctx, is_field_name=False):
                         trans = ctx.immediate_transition(_clob_end_handler(c, ctx))
                     elif c == _SLASH:
                         if ctx.container.ion_type is IonType.SEXP:
-                            pending = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)[0]
+                            pending = ctx.event_transition(IonEvent, IonEventType.SCALAR,
+                                                           ctx.ion_type, ctx.value.as_text())[0]
                             trans = ctx.immediate_transition(_sexp_slash_handler(c, ctx, self, pending))
                         else:
                             trans = ctx.immediate_transition(_comment_handler(c, ctx, self))
@@ -1029,7 +1030,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
                             _illegal_character(c, ctx, 'Illegal character after field name %s.' % (val,))
                         trans = ctx.immediate_transition(ctx.whence)
                     else:
-                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value)
+                        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value.as_text())
         c, _ = yield trans
         trans = in_data and here_in_data or here_outside_data
 
@@ -1142,7 +1143,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 ctx = ctx.derive_pending_symbol(val)
                 trans = ctx.immediate_transition(ctx.whence)
             elif c in _VALUE_TERMINATORS or (in_sexp and c in _OPERATORS):
-                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val)
+                trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val.as_symbol())
             else:
                 trans = ctx.immediate_transition(_identifier_symbol_handler(c, ctx, is_field_name=is_field_name))
         c, _ = yield trans
@@ -1193,9 +1194,9 @@ def _inf_or_operator_handler_factory(c_start, is_delegate=True):
         if match_index == 0:
             if c in _OPERATORS:
                 yield ctx.immediate_transition(_operator_symbol_handler(c, ctx))
-            yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)
+            yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value.as_symbol())
         yield _composite_transition(
-            ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
+            ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value.as_symbol())[0],
             ctx,
             partial(_identifier_symbol_handler, c),
             next_ctx
@@ -1219,7 +1220,7 @@ def _operator_symbol_handler(c, ctx):
     while c in _OPERATORS:
         val.append(c)
         c, _ = yield trans
-    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val)
+    yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val.as_symbol())
 
 
 def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition):
@@ -1229,7 +1230,8 @@ def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition):
         ctx = ctx.derive_pending_symbol(ctx.value)
         trans = ctx.immediate_transition(ctx.whence, trans_cls=trans_cls)
     else:
-        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value, trans_cls=trans_cls)
+        trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL,
+                                     ctx.value.as_symbol(), trans_cls=trans_cls)
     return trans
 
 
@@ -1246,7 +1248,7 @@ def _identifier_symbol_handler(c, ctx, is_field_name=False):
             ctx.queue.unread(c_next)
             assert ctx.value
             yield _composite_transition(
-                ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value)[0],
+                ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value.as_symbol())[0],
                 ctx,
                 partial(_operator_symbol_handler, c)
             )
@@ -1316,7 +1318,7 @@ def _short_string_handler_factory():
         return ctx, val, is_string
 
     def on_close(ctx):
-        return ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value,
+        return ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value.as_text(),
                                     trans_cls=_SelfDelimitingTransition)
 
     def after(c, ctx, is_field_name):
@@ -1378,7 +1380,7 @@ _to_bytes = six.binary_type if six.PY2 else partial(six.binary_type, encoding=_E
 def _parse_lob(ion_type, value):
     def parse():
         if ion_type is IonType.CLOB:
-            return _to_bytes(value.value)
+            return _to_bytes(value.as_text())
         return base64.b64decode(value)
     return parse
 
@@ -1614,7 +1616,7 @@ def _container_handler(c, ctx):
 
     def symbol_value_event():
         return child_context.event_transition(
-            IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol)[0]
+            IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol.as_symbol())[0]
 
     def pending_symbol_value():
         if has_pending_symbol():
