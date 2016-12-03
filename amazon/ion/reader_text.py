@@ -29,7 +29,7 @@ from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_
     IonEventType, IonThunkEvent, TimestampPrecision, timestamp
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr
-from amazon.ion.symbols import SymbolToken
+from amazon.ion.symbols import SymbolToken, TEXT_ION_1_0, _SYSTEM_SYMBOL_TOKENS
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
 
 _o = six.byte2int
@@ -101,8 +101,8 @@ _TIMESTAMP_DELIMITERS = _seq(b'-:+.')
 _TIMESTAMP_OFFSET_INDICATORS = _seq(b'Z+-')
 _LETTERS = _seq(b'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
 _BASE64_DIGITS = _LETTERS + _DIGITS + _seq(b'+/')
-_IDENTIFIER_STARTS = _LETTERS + _seq(b'$_')
-_IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS
+_IDENTIFIER_STARTS = _LETTERS + _seq(b'_')  # Note: '$' is dealt with separately.
+_IDENTIFIER_CHARACTERS = _IDENTIFIER_STARTS + _DIGITS + _seq(b'$')
 _OPERATORS = _seq(b'!#%&*+-./;<=>?@^`|~')
 _COMMON_ESCAPES = _seq(b'abtnfrv?0\'"/\\')
 _NEWLINES = _seq(b'\r\n')
@@ -118,6 +118,7 @@ _CARRIAGE_RETURN = _o(b'\r')
 _NEWLINE = _o(b'\n')
 _DOUBLE_QUOTE = _o(b'"')
 _SINGLE_QUOTE = _o(b'\'')
+_DOLLAR_SIGN = _o(b'$')
 _PLUS = _o(b'+')
 _MINUS = _o(b'-')
 _HYPHEN = _MINUS
@@ -147,6 +148,9 @@ _TRUE_SEQUENCE = _seq(b'rue')
 _FALSE_SEQUENCE = _seq(b'alse')
 _NAN_SEQUENCE = _seq(b'an')
 _INF_SEQUENCE = _seq(b'inf')
+_IVM_SEQUENCE = _seq(TEXT_ION_1_0.encode(_ENCODING))
+
+_IVM_TOKEN = _SYSTEM_SYMBOL_TOKENS[1]
 
 _POS_INF = float('+inf')
 _NEG_INF = float('-inf')
@@ -285,6 +289,13 @@ class CodePointArray(collections.MutableSequence):
 
     def __delitem__(self, index):
         raise ValueError('Attempted to delete from code point sequence.')
+
+
+def _as_symbol(value):
+    if hasattr(value, 'as_symbol'):
+        return value.as_symbol()
+    assert isinstance(value, SymbolToken)
+    return value
 
 
 class _HandlerContext(record(
@@ -446,7 +457,7 @@ class _HandlerContext(record(
         """Derives a context which appends the current context's pending_symbol to its annotations sequence."""
         assert self.pending_symbol is not None
         assert not self.value
-        annotations = (self.pending_symbol.as_symbol(),)  # pending_symbol becomes an annotation
+        annotations = (_as_symbol(self.pending_symbol),)  # pending_symbol becomes an annotation
         return _HandlerContext(
             self.container,
             self.queue,
@@ -466,7 +477,7 @@ class _HandlerContext(record(
         return _HandlerContext(
             self.container,
             self.queue,
-            self.pending_symbol.as_symbol(),  # pending_symbol becomes field name
+            _as_symbol(self.pending_symbol),  # pending_symbol becomes field name
             self.annotations,
             self.depth,
             self.whence,
@@ -1145,7 +1156,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
             elif c in _VALUE_TERMINATORS or (in_sexp and c in _OPERATORS):
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val.as_symbol())
             else:
-                trans = ctx.immediate_transition(_identifier_symbol_handler(c, ctx, is_field_name=is_field_name))
+                trans = ctx.immediate_transition(_unquoted_symbol_handler(c, ctx, is_field_name=is_field_name))
         c, _ = yield trans
 
 
@@ -1198,7 +1209,7 @@ def _inf_or_operator_handler_factory(c_start, is_delegate=True):
         yield _composite_transition(
             ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value.as_symbol())[0],
             ctx,
-            partial(_identifier_symbol_handler, c),
+            partial(_unquoted_symbol_handler, c),
             next_ctx
         )
     return inf_or_operator_handler
@@ -1223,20 +1234,22 @@ def _operator_symbol_handler(c, ctx):
     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val.as_symbol())
 
 
-def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition):
+def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition, value=None):
     """Returns a transition which ends the current symbol token."""
+    if value is None:
+        value = ctx.value
     if is_field_name or c in _SYMBOL_TOKEN_TERMINATORS or trans_cls is _SelfDelimitingTransition:
         # This might be an annotation or a field name.
-        ctx = ctx.derive_pending_symbol(ctx.value)
+        ctx = ctx.derive_pending_symbol(value)
         trans = ctx.immediate_transition(ctx.whence, trans_cls=trans_cls)
     else:
         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL,
-                                     ctx.value.as_symbol(), trans_cls=trans_cls)
+                                     _as_symbol(value), trans_cls=trans_cls)
     return trans
 
 
 @coroutine
-def _identifier_symbol_handler(c, ctx, is_field_name=False):
+def _unquoted_symbol_handler(c, ctx, is_field_name=False):
     """Handles identifier symbol tokens. If in an s-expression, these may be followed without whitespace by
     operators.
     """
@@ -1268,6 +1281,50 @@ def _identifier_symbol_handler(c, ctx, is_field_name=False):
         prev = c
         c, _ = yield trans
     yield _symbol_token_end(c, ctx, is_field_name)
+
+
+@coroutine
+def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
+    """Handles symbol tokens that begin with a dollar sign. These may end up being system symbols ($ion_*), symbol
+    identifiers ('$' DIGITS+), or regular unquoted symbols.
+    """
+    assert c == _DOLLAR_SIGN
+    in_sexp = ctx.container.ion_type is IonType.SEXP
+    ctx = ctx.derive_unicode()
+    val = ctx.value
+    val.append(c)
+    prev = c
+    c, self = yield
+    trans = ctx.immediate_transition(self)
+    maybe_ivm = ctx.depth == 0 and not is_field_name
+    maybe_identifier = True
+    match_index = 1
+    while True:
+        if c not in _WHITESPACE:
+            if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
+                break
+            if c not in _DIGITS:
+                maybe_identifier = False
+            if maybe_ivm:
+                if match_index < len(_IVM_SEQUENCE):
+                    maybe_ivm = c == _IVM_SEQUENCE[match_index]
+            if maybe_ivm:
+                match_index += 1
+            elif not maybe_identifier:
+                yield ctx.immediate_transition(_unquoted_symbol_handler(c, ctx, is_field_name))
+            val.append(c)
+        prev = c
+        c, _ = yield trans
+    if len(val) == 1:
+        assert val[0] == _c(_DOLLAR_SIGN)
+    elif maybe_identifier:
+        assert not maybe_ivm
+        sid = int(val[1:])
+        val = SymbolToken(None, sid)
+    else:
+        assert maybe_ivm  # TODO testing around IVMs and almost-IVMs
+        val = _IVM_TOKEN  # TODO once this is determined to be a value, emit as IVM event
+    yield _symbol_token_end(c, ctx, is_field_name, value=val)
 
 
 def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
@@ -1494,6 +1551,8 @@ _clob_end_handler = _clob_end_handler_factory()
 _single_quoted_field_name_handler = partial(_long_string_or_symbol_handler, is_field_name=True)
 _double_quoted_field_name_handler = partial(_short_string_handler, is_field_name=True)
 _unquoted_field_name_handler = partial(_symbol_or_keyword_handler, is_field_name=True)
+_symbol_identifier_or_unquoted_field_name_handler = partial(_symbol_identifier_or_unquoted_symbol_handler,
+                                                            is_field_name=True)
 
 
 def _container_start_handler_factory(ion_type, before_yield=lambda c, ctx: None):
@@ -1577,6 +1636,7 @@ _FIELD_NAME_START_TABLE = _whitelist(
         {
             _SINGLE_QUOTE: _single_quoted_field_name_handler,
             _DOUBLE_QUOTE: _double_quoted_field_name_handler,
+            _DOLLAR_SIGN: _symbol_identifier_or_unquoted_field_name_handler,
         },
         (_IDENTIFIER_STARTS, _unquoted_field_name_handler)
     ),
@@ -1594,6 +1654,7 @@ _VALUE_START_TABLE = _whitelist(
             _OPEN_BRACKET: _list_handler,
             _SINGLE_QUOTE: _long_string_or_symbol_handler,
             _DOUBLE_QUOTE: _short_string_handler,
+            _DOLLAR_SIGN: _symbol_identifier_or_unquoted_symbol_handler,
         },
         (_DIGITS[1:], _number_or_timestamp_handler)
     ),
@@ -1616,7 +1677,7 @@ def _container_handler(c, ctx):
 
     def symbol_value_event():
         return child_context.event_transition(
-            IonEvent, IonEventType.SCALAR, IonType.SYMBOL, child_context.pending_symbol.as_symbol())[0]
+            IonEvent, IonEventType.SCALAR, IonType.SYMBOL, _as_symbol(child_context.pending_symbol))[0]
 
     def pending_symbol_value():
         if has_pending_symbol():

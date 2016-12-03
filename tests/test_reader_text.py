@@ -39,6 +39,10 @@ _tp = TimestampPrecision
 _d = Decimal
 _st = partial(SymbolToken, sid=None, location=None)
 
+
+def _sid(sid):
+    return SymbolToken(text=None, sid=sid, location=None)
+
 _BAD_GRAMMAR = (
     (b'+1',),
     (b'01',),
@@ -620,6 +624,8 @@ _GOOD_SCALARS = (
     (b'null.symbol', e_symbol()),
     (b'nul', e_symbol(_st(u'nul'))),  # See the logic in the event generators that forces these to emit an event.
     (b'$foo', e_symbol(_st(u'$foo'))),
+    (b'$10', e_symbol(_sid(10))),
+    (b'$', e_symbol(_st(u'$'))),
     (b'\'a b\'', e_symbol(_st(u'a b'))),
     (b'\'\'', e_symbol(_st(u''))),
 
@@ -755,6 +761,9 @@ _TEST_SYMBOLS = (
     (
         b'foo',
         b'$foo',
+        b'$ios',
+        b'$',
+        b'$10',
         b'\'a b\'',
         b'foo ',
         b'\'a b\' ',
@@ -766,6 +775,9 @@ _TEST_SYMBOLS = (
     (
         _st(u'foo'),
         _st(u'$foo'),
+        _st(u'$ios'),
+        _st(u'$'),
+        _sid(10),
         _st(u'a b'),
         _st(u'foo'),
         _st(u'a b'),
