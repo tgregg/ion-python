@@ -26,10 +26,10 @@ import collections
 import six
 
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
-    IonEventType, IonThunkEvent, TimestampPrecision, timestamp
+    IonEventType, IonThunkEvent, TimestampPrecision, timestamp, ION_VERSION_MARKER_EVENT
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr
-from amazon.ion.symbols import SymbolToken, TEXT_ION_1_0, _SYSTEM_SYMBOL_TOKENS
+from amazon.ion.symbols import SymbolToken, TEXT_ION_1_0
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
 
 _o = six.byte2int
@@ -150,7 +150,7 @@ _NAN_SEQUENCE = _seq(b'an')
 _INF_SEQUENCE = _seq(b'inf')
 _IVM_SEQUENCE = _seq(TEXT_ION_1_0.encode(_ENCODING))
 
-_IVM_TOKEN = _SYSTEM_SYMBOL_TOKENS[1]
+_IVM_TOKEN = SymbolToken(TEXT_ION_1_0, sid=None)
 
 _POS_INF = float('+inf')
 _NEG_INF = float('-inf')
@@ -340,6 +340,9 @@ class _HandlerContext(record(
 
         if whence is None:
             whence = self.whence
+
+        if ion_type is IonType.SYMBOL and value is _IVM_TOKEN and not annotations and depth == 0:
+            return trans_cls(ION_VERSION_MARKER_EVENT, whence), None
 
         return trans_cls(
             event_cls(event_type, ion_type, value, self.field_name, annotations, depth),
@@ -1102,14 +1105,14 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
     keyword_trans = None
     match_index = 0
     while True:
-        def check_keyword(name, keyword_sequence, ion_type, value, match_transition=lambda: (False, None)):
+        def check_keyword(name, keyword_sequence, ion_type, value, match_transition=lambda: None):
             maybe_keyword = True
             transition = None
             if match_index < len(keyword_sequence):
                 maybe_keyword = c == keyword_sequence[match_index]
             else:
-                transitioned, transition = match_transition()
-                if transitioned:
+                transition = match_transition()
+                if transition is not None:
                     pass
                 elif c in _VALUE_TERMINATORS:
                     if is_field_name:
@@ -1133,7 +1136,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
                     if is_field_name:
                         _illegal_character(c, ctx, "Illegal character in field name.")
                     transition = ctx.immediate_transition(_typed_null_handler(c, ctx))
-                return found, transition
+                return transition
             maybe_null, keyword_trans = check_keyword('null', _NULL_SEQUENCE.sequence,
                                                       IonType.NULL, None, check_null_dot)
         if maybe_nan:
@@ -1303,16 +1306,19 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
         if c not in _WHITESPACE:
             if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
                 break
-            if c not in _DIGITS:
-                maybe_identifier = False
+            maybe_identifier = maybe_identifier and c in _DIGITS
             if maybe_ivm:
                 if match_index < len(_IVM_SEQUENCE):
                     maybe_ivm = c == _IVM_SEQUENCE[match_index]
+                else:
+                    maybe_ivm = False
             if maybe_ivm:
                 match_index += 1
             elif not maybe_identifier:
                 yield ctx.immediate_transition(_unquoted_symbol_handler(c, ctx, is_field_name))
             val.append(c)
+        elif match_index < len(_IVM_SEQUENCE):
+            maybe_ivm = False
         prev = c
         c, _ = yield trans
     if len(val) == 1:
@@ -1321,9 +1327,8 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
         assert not maybe_ivm
         sid = int(val[1:])
         val = SymbolToken(None, sid)
-    else:
-        assert maybe_ivm  # TODO testing around IVMs and almost-IVMs
-        val = _IVM_TOKEN  # TODO once this is determined to be a value, emit as IVM event
+    elif maybe_ivm:
+        val = _IVM_TOKEN
     yield _symbol_token_end(c, ctx, is_field_name, value=val)
 
 
@@ -1802,7 +1807,8 @@ def _container_handler(c, ctx):
                     # Hence, a new character should not be read; it should be provided to the handler for the next
                     # child context.
                     yield trans
-                    is_container = trans.event.ion_type.is_container and \
+                    event_ion_type = trans.event.ion_type  # None in the case of IVM event.
+                    is_container = event_ion_type is not None and event_ion_type.is_container and \
                         trans.event.event_type is not IonEventType.SCALAR
                     if is_container:
                         assert next_transition is None

@@ -293,6 +293,13 @@ _good_list = partial(_good_container, e_start_list, e_end_list)
 
 
 _GOOD = (
+    (b'$ion_1_0 42 ', IVM, e_int(42)),
+    (b'$ion_1_ 42 ', e_symbol(_st(u'$ion_1_')), e_int(42)),
+    (b'$ion_1_1 42 ', e_symbol(_st(u'$ion_1_1')), e_int(42)),
+    (b'$ion_1_02 42 ', e_symbol(_st(u'$ion_1_02')), e_int(42)),
+    (b'ann::$ion_1_0 42 ', e_symbol(_st(u'$ion_1_0'), annotations=(_st(u'ann'),)), e_int(42)),
+    (b'{$ion_1_0:abc}',) + _good_struct(e_symbol(_st(u'abc'), field_name=_st(u'$ion_1_0'))),
+    (b'($ion_1_0)',) + _good_sexp(e_symbol(_st(u'$ion_1_0'))),
     (b'42[]', e_int(42)) + _good_list(),
     (b'\'foo\'123 ', e_symbol(_st(u'foo')), e_int(123)),
     (b'null()', e_null()) + _good_sexp(),
@@ -625,6 +632,8 @@ _GOOD_SCALARS = (
     (b'nul', e_symbol(_st(u'nul'))),  # See the logic in the event generators that forces these to emit an event.
     (b'$foo', e_symbol(_st(u'$foo'))),
     (b'$10', e_symbol(_sid(10))),
+    (b'$2', e_symbol(_sid(2))),  # Note: NOT an IVM event
+    (b"'$ion_1_0'", e_symbol(_st(u'$ion_1_0'))),  # Note: NOT an IVM event
     (b'$', e_symbol(_st(u'$'))),
     (b'\'a b\'', e_symbol(_st(u'a b'))),
     (b'\'\'', e_symbol(_st(u''))),
