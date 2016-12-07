@@ -2095,3 +2095,5 @@ def reader(queue=None, is_unicode=False):
         pending_symbol=None
     )
     return reader_trampoline(_skip_trampoline(_container_handler(None, ctx)), allow_flush=True)
+
+text_reader = reader

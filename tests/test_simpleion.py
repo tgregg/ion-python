@@ -38,80 +38,90 @@ class Parameter(record('desc', 'obj', 'expected', 'has_symbols', ('stream', Fals
         return self.desc
 
 
+class Expected:
+    def __init__(self, binary, text):
+        self.binary = [binary]
+        self.text = [text]
+
 _SIMPLE_CONTAINER_MAP = {
     IonType.LIST: (
         (
             [[], ],
-            [b'\xB0', ]
+            Expected(b'\xB0', b'[]')
         ),
         (
             [IonPyList.from_value(IonType.LIST, []), ],
-            [b'\xB0', ]
+            Expected(b'\xB0', b'[]')
         ),
         (
             [[0], ],
-            [
+            Expected(
                 bytearray([
                     0xB0 | 0x01,  # Int value 0 fits in 1 byte.
                     ION_ENCODED_INT_ZERO
                 ]),
-            ]
+                b'[0]'
+            )
         ),
         (
             [IonPyList.from_value(IonType.LIST, [0]), ],
-            [
+            Expected(
                 bytearray([
                     0xB0 | 0x01,  # Int value 0 fits in 1 byte.
                     ION_ENCODED_INT_ZERO
                 ]),
-            ]
+                b'[0]'
+            )
         ),
     ),
     IonType.SEXP: (
         (
             [IonPyList.from_value(IonType.SEXP, []), ],
-            [b'\xC0', ]
+            Expected(b'\xC0', b'()')
         ),
         (
             [IonPyList.from_value(IonType.SEXP, [0]), ],
-            [
+            Expected(
                 bytearray([
                     0xC0 | 0x01,  # Int value 0 fits in 1 byte.
                     ION_ENCODED_INT_ZERO
                 ]),
-            ]
+                b'(0)'
+            )
         ),
     ),
     IonType.STRUCT: (
         (
             [{}, ],
-            [b'\xD0', ]
+            Expected(b'\xD0', b'{}')
         ),
         (
             [IonPyDict.from_value(IonType.STRUCT, {}), ],
-            [b'\xD0', ]
+            Expected(b'\xD0', b'{}')
         ),
         (
             [{u'foo': 0}, ],
-            [
+            Expected(
                 bytearray([
                     0xDE,  # The lower nibble may vary. It does not indicate actual length unless it's 0.
                     VARUINT_END_BYTE | 2,  # Field name 10 and value 0 each fit in 1 byte.
                     VARUINT_END_BYTE | 10,
                     ION_ENCODED_INT_ZERO
                 ]),
-            ]
+                b"{'foo':bar}"
+            )
         ),
         (
             [IonPyDict.from_value(IonType.STRUCT, {u'foo': 0}), ],
-            [
+            Expected(
                 bytearray([
                     0xDE,  # The lower nibble may vary. It does not indicate actual length unless it's 0.
                     VARUINT_END_BYTE | 2,  # Field name 10 and value 0 each fit in 1 byte.
                     VARUINT_END_BYTE | 10,
                     ION_ENCODED_INT_ZERO
                 ]),
-            ]
+                b"{'foo':0}"
+            )
         ),
     ),
 }
@@ -146,7 +156,7 @@ def generate_containers(container_map, preceding_symbols=0):
     for ion_type, container in six.iteritems(container_map):
         for test_tuple in container:
             obj = test_tuple[0]
-            expecteds = test_tuple[1]
+            expecteds = test_tuple[1].binary
             has_symbols = False
             for elem in obj:
                 if isinstance(elem, dict) and len(elem) > 0:
@@ -186,6 +196,7 @@ def generate_annotated_values(scalars_map, container_map):
             has_symbols=True,
             stream=value_p.stream
         )
+
 
 @parametrize(
     *tuple(chain(
@@ -249,7 +260,7 @@ _ROUNDTRIPS = [
     b'abcd',
     IonPyBytes.from_value(IonType.CLOB, b'abcd'),
     [[[]]],
-    [[],[],[]],
+    [[], [], []],
     [{}, {}, {}],
     {u'foo': [], u'bar': [], u'baz': []},
     {u'foo': {u'foo': {}}},
@@ -258,38 +269,36 @@ _ROUNDTRIPS = [
     {
          u'foo': IonPyText.from_value(IonType.STRING, u'bar', annotations=(u'str',)),
          u'baz': 123,
-         u'lst': IonPyList.from_value(IonType.LIST,
-                                     [
-                                         True,
-                                         None,
-                                         1.23e4,
-                                         IonPyText.from_value(IonType.SYMBOL, u'sym')
-                                     ]),
-         u'sxp': IonPyList.from_value(IonType.SEXP,
-                                     [
-                                         False,
-                                         IonPyNull.from_value(IonType.STRUCT, None, (u'class',)),
-                                         Decimal('5.678')
-                                     ])
+         u'lst': IonPyList.from_value(IonType.LIST, [
+             True, None, 1.23e4, IonPyText.from_value(IonType.SYMBOL, u'sym')
+         ]),
+         u'sxp': IonPyList.from_value(IonType.SEXP, [
+             False, IonPyNull.from_value(IonType.STRUCT, None, (u'class',)), Decimal('5.678')
+         ])
     },
 
 ]
 
 
 def _generate_roundtrips(roundtrips):
-    for obj in roundtrips:
-        yield obj
-        if not isinstance(obj, _IonNature):
-            ion_type = _ion_type(obj)
-            yield _FROM_ION_TYPE[ion_type].from_value(ion_type, obj)
-        else:
-            ion_type = obj.ion_type
-        if isinstance(obj, IonPyNull):
-            obj = None
-        yield _FROM_ION_TYPE[ion_type].from_value(ion_type, obj, annotations=(u'annot1', u'annot2'))
-        if isinstance(obj, list):
-            yield _FROM_ION_TYPE[ion_type].from_value(IonType.SEXP, obj)
-            yield _FROM_ION_TYPE[ion_type].from_value(IonType.SEXP, obj, annotations=(u'annot1', u'annot2'))
+    for is_binary in (True, False):
+        def _to_obj(obj, to_type=None, annotations=()):
+            if to_type is None:
+                to_type = ion_type
+            return _FROM_ION_TYPE[ion_type].from_value(to_type, obj, annotations=annotations), is_binary
+        for obj in roundtrips:
+            yield obj, is_binary
+            if not isinstance(obj, _IonNature):
+                ion_type = _ion_type(obj)
+                yield _to_obj(obj)
+            else:
+                ion_type = obj.ion_type
+            if isinstance(obj, IonPyNull):
+                obj = None
+            yield _to_obj(obj, annotations=(u'annot1', u'annot2'))
+            if isinstance(obj, list):
+                yield _to_obj(obj, IonType.SEXP)
+                yield _to_obj(obj, IonType.SEXP, annotations=(u'annot1', u'annot2'))
 
 
 def _assert_roundtrip(before, after):
@@ -317,25 +326,28 @@ def _assert_roundtrip(before, after):
 @parametrize(
     *tuple(_generate_roundtrips(_ROUNDTRIPS))
 )
-def test_roundtrip(obj):
+def test_roundtrip(p):
+    obj, is_binary = p
     out = BytesIO()
-    dump(obj, out)
+    dump(obj, out, binary=is_binary)
     out.seek(0)
     res = load(out)
     _assert_roundtrip(obj, res)
 
 
-def test_single_value_with_stream_fails():
+@parametrize(True, False)
+def test_single_value_with_stream_fails(is_binary):
     out = BytesIO()
-    dump(['foo', 123], out, sequence_as_stream=True)
+    dump(['foo', 123], out, binary=is_binary, sequence_as_stream=True)
     out.seek(0)
     with raises(IonException):
         load(out, single_value=True)
 
 
-def test_unknown_object_type_fails():
+@parametrize(True, False)
+def test_unknown_object_type_fails(is_binary):
     class Dummy:
         pass
     out = BytesIO()
     with raises(TypeError):
-        dump(Dummy(), out)
+        dump(Dummy(), out, binary=is_binary)
