@@ -822,3 +822,5 @@ def raw_reader(queue=None):
     )
 
     return reader_trampoline(_container_handler(None, ctx))
+
+binary_reader = raw_reader
