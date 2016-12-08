@@ -80,6 +80,7 @@ _BAD_GRAMMAR = (
     (b'2000-01--3T',),
     (b'2007-02-23T20:14:33.Z',),
     (b'2007-02-23T20:14:33.12.3Z',),
+    (b'2007-02-23T20:14:33.12+00',),
     (b'1a',),
     (b'foo-',),
     (b'%',),
@@ -600,6 +601,7 @@ _GOOD_SCALARS = (
     (b'2007-01T', e_timestamp(_ts(2007, 1, precision=_tp.MONTH))),
     (b'2007T', e_timestamp(_ts(2007, precision=_tp.YEAR))),
     (b'2007-01-01', e_timestamp(_ts(2007, 1, 1, precision=_tp.DAY))),
+    (b'2000-01-01T00:00:00.0Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 0, precision=_tp.SECOND))),
     (b'2000-01-01T00:00:00.000Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 0, precision=_tp.SECOND))),
     (
         b'2000-01-01T00:00:00.000-00:00',

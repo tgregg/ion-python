@@ -911,9 +911,9 @@ def _timestamp_handler(c, ctx):
                     elif state == _TimestampState.SECOND:
                         nxt = _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
                     elif state == _TimestampState.FRACTIONAL:
-                        nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS #+ (_DOT,) # TODO add negative test case for decimal in fractional
+                        nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS
                     elif state == _TimestampState.OFF_HOUR:
-                        nxt = (_COLON,) #+ _VALUE_TERMINATORS  # TODO add negative test case for off hour without off minute
+                        nxt = (_COLON,)
                     elif state == _TimestampState.OFF_MINUTE:
                         nxt = _VALUE_TERMINATORS
                         can_terminate = True
