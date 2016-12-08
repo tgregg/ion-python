@@ -43,6 +43,10 @@ class IonType(Enum):
     STRUCT = 12
 
     @property
+    def is_numeric(self):
+        return IonType.INT <= self <= IonType.TIMESTAMP
+
+    @property
     def is_text(self):
         """Returns whether the type is a Unicode textual type."""
         return self is IonType.SYMBOL or self is IonType.STRING

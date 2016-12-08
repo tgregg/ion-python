@@ -32,6 +32,9 @@ def safe_unichr(c):
     return (hasattr(c, 'char') and len(c.char) > 1) and c.char or six.unichr(c)
 
 
+_EOF = b'\x04'  # End of transmission character.
+
+
 class BufferQueue(object):
     """A simple circular buffer of buffers."""
     def __init__(self, is_unicode=False):
@@ -41,14 +44,22 @@ class BufferQueue(object):
         self.position = 0
         self.is_unicode = is_unicode
 
+    @staticmethod
+    def is_eof(c):
+        return c is _EOF  # Note reference equality, ensuring that the EOF literal is still illegal as part of the data.
+
     def extend(self, data):
         # TODO Determine if there are any other accumulation strategies that make sense.
         # TODO Determine if we should use memoryview to avoid copying.
         if not (self.is_unicode ^ isinstance(data, six.binary_type)):
-            raise ValueError('Incompatible input data types. Expected %r.'
-                             % (self.is_unicode and six.text_type or six.binary_type,))
+            raise ValueError('Incompatible input data types. Expected %r, got %r.'
+                             % (self.is_unicode and six.text_type or six.binary_type, type(data)))
         self.__segments.append(data)
         self.__size += len(data)
+
+    def eof(self):
+        self.__segments.append(_EOF)
+        self.__size += 1
 
     def read(self, length, skip=False):
         """Consumes the first ``length`` bytes from the accumulator."""
@@ -115,7 +126,10 @@ class BufferQueue(object):
         segment = segments[0]
         segment_len = len(segment)
         offset = self.__offset
-        octet = self.cp_to_int(segment, offset)
+        if segment is _EOF:
+            octet = _EOF
+        else:
+            octet = self.cp_to_int(segment, offset)
         offset += 1
         if offset == segment_len:
             offset = 0
@@ -199,7 +213,7 @@ def read_data_event(data):
 
 
 @coroutine
-def reader_trampoline(start):
+def reader_trampoline(start, allow_flush=False):
     """Provides the co-routine trampoline for a reader state machine.
 
     The given co-routine is a state machine that yields :class:`Transition` and takes
@@ -241,7 +255,7 @@ def reader_trampoline(start):
             # Only yield if there is an event.
             data_event = (yield trans.event)
             if trans.event.event_type.is_stream_signal:
-                if data_event.type is not ReadEventType.DATA:
+                if data_event.type is not ReadEventType.DATA and not allow_flush:
                     raise TypeError('Reader expected data: %r' % (data_event,))
             else:
                 if data_event.type is ReadEventType.DATA:
@@ -274,8 +288,12 @@ def blocking_reader(reader, input, buffer_size=_DEFAULT_BUFFER_SIZE):
             data = input.read(buffer_size)
             if len(data) == 0:
                 # End of file.
-                if ion_event.event_type is not IonEventType.STREAM_END:
-                    raise EOFError('Premature EOF while parsing')
-                yield ION_STREAM_END_EVENT
-                return
+                #if ion_event.event_type is not IonEventType.STREAM_END:
+                #    raise EOFError('Premature EOF while parsing')
+                if ion_event.event_type is IonEventType.INCOMPLETE:
+                    ion_event = reader.send(NEXT_EVENT)
+                    continue
+                else:
+                    yield ION_STREAM_END_EVENT
+                    return
             ion_event = reader.send(read_data_event(data))

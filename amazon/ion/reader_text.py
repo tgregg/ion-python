@@ -47,8 +47,9 @@ def _illegal_character(c, ctx, message=''):
     """
     container_type = ctx.container.ion_type is None and 'top-level' or ctx.container.ion_type.name
     value_type = ctx.ion_type is None and 'unknown' or ctx.ion_type.name
+    c = 'EOF' if BufferQueue.is_eof(c) else _c(c)
     raise IonException('Illegal character %s at position %d in %s value contained in %s. %s Pending value: %s'
-                       % (_c(c), ctx.queue.position, value_type, container_type, message, ctx.value))
+                       % (c, ctx.queue.position, value_type, container_type, message, ctx.value))
 
 
 def _whitelist(dct, fallback=_illegal_character):
@@ -353,7 +354,7 @@ class _HandlerContext(record(
         """Returns an immediate transition to another co-routine."""
         return trans_cls(None, delegate), self
 
-    def read_data_event(self, whence, complete=False):
+    def read_data_event(self, whence, complete=False, can_flush=False):
         """Creates a co-routine for retrieving data as bytes.
 
         Args:
@@ -361,7 +362,8 @@ class _HandlerContext(record(
             complete (Optional[bool]): True if STREAM_END should be emitted if no bytes are read or
                 available; False if INCOMPLETE should be emitted in that case.
         """
-        return Transition(None, _read_data_handler(whence, self, complete))
+        can_flush = can_flush and not complete
+        return Transition(None, _read_data_handler(whence, self, complete, can_flush))
 
     def next_code_point(self, whence):
         """Creates a co-routine for retrieving data as code points.
@@ -593,7 +595,7 @@ def _number_or_timestamp_handler(c, ctx):
     c, self = yield
     trans = ctx.immediate_transition(self)
     while True:
-        if c in _VALUE_TERMINATORS:
+        if c in _VALUE_TERMINATORS or BufferQueue.is_eof(c):
             trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR,
                                          ctx.ion_type, _parse_decimal_int(ctx.value))
             if c == _SLASH:
@@ -636,7 +638,7 @@ def _numeric_handler_factory(charset, transition, assertion, illegal_before_unde
         c, self = yield
         trans = ctx.immediate_transition(self)
         while True:
-            if c in _VALUE_TERMINATORS:
+            if c in _VALUE_TERMINATORS or BufferQueue.is_eof(c):
                 if prev == _UNDERSCORE or prev in illegal_at_end:
                     _illegal_character(c, ctx, '%s at end of number.' % (_c(prev),))
                 trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, parse_func(ctx.value))
@@ -863,20 +865,26 @@ def _timestamp_handler(c, ctx):
     nxt = _DIGITS
     tokens = _TimestampTokens(ctx.value)
     val = None
+    can_terminate = False
     if prev == _T:
         nxt += _VALUE_TERMINATORS
+        can_terminate = True
     while True:
-        if c not in nxt:
+        is_eof = can_terminate and BufferQueue.is_eof(c)
+        if c not in nxt and not is_eof:
             _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_c(x) for x in nxt], state))
-        if c in _VALUE_TERMINATORS:
+        if c in _VALUE_TERMINATORS or is_eof:
             trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_timestamp(tokens))
             if c == _SLASH:
                 trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
         else:
+            can_terminate = False
             if c == _Z:
                 nxt = _VALUE_TERMINATORS
+                can_terminate = True
             elif c == _T:
                 nxt = _VALUE_TERMINATORS + _DIGITS
+                can_terminate = True
             elif c in _TIMESTAMP_DELIMITERS:
                 nxt = _DIGITS
             elif c in _DIGITS:
@@ -888,11 +896,14 @@ def _timestamp_handler(c, ctx):
                 elif prev in (_TIMESTAMP_DELIMITERS + (_T,)):
                     state = _TimestampState[state + 1]
                     val = tokens.transition(state)
+                    if state == _TimestampState.FRACTIONAL:
+                        nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS
                 elif prev in _DIGITS:
                     if state == _TimestampState.MONTH:
                         nxt = _TIMESTAMP_YEAR_DELIMITERS
                     elif state == _TimestampState.DAY:
                         nxt = (_T,) + _VALUE_TERMINATORS
+                        can_terminate = True
                     elif state == _TimestampState.HOUR:
                         nxt = (_COLON,)
                     elif state == _TimestampState.MINUTE:
@@ -900,11 +911,12 @@ def _timestamp_handler(c, ctx):
                     elif state == _TimestampState.SECOND:
                         nxt = _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
                     elif state == _TimestampState.FRACTIONAL:
-                        nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS + (_DOT,)
+                        nxt = _DIGITS + _TIMESTAMP_OFFSET_INDICATORS #+ (_DOT,) # TODO add negative test case for decimal in fractional
                     elif state == _TimestampState.OFF_HOUR:
-                        nxt = (_COLON,) + _VALUE_TERMINATORS
+                        nxt = (_COLON,) #+ _VALUE_TERMINATORS  # TODO add negative test case for off hour without off minute
                     elif state == _TimestampState.OFF_MINUTE:
                         nxt = _VALUE_TERMINATORS
+                        can_terminate = True
                     else:
                         raise ValueError('Unknown timestamp state %r.' % (state,))
                 else:
@@ -1093,7 +1105,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
             yield ctx.immediate_transition(_operator_symbol_handler(c, ctx))
         _illegal_character(c, ctx)
     assert not ctx.value
-    ctx = ctx.derive_unicode()
+    ctx = ctx.derive_unicode().derive_ion_type(IonType.SYMBOL)
     val = ctx.value
     val.append(c)
     maybe_null = c == _N_LOWER
@@ -1114,7 +1126,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 transition = match_transition()
                 if transition is not None:
                     pass
-                elif c in _VALUE_TERMINATORS:
+                elif c in _VALUE_TERMINATORS or BufferQueue.is_eof(c):
                     if is_field_name:
                         _illegal_character(c, ctx, '%s keyword as field name not allowed.' % (name,))
                     transition = ctx.event_transition(IonEvent, IonEventType.SCALAR, ion_type, value)
@@ -1156,7 +1168,7 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
                 # This might be an annotation or a field name
                 ctx = ctx.derive_pending_symbol(val)
                 trans = ctx.immediate_transition(ctx.whence)
-            elif c in _VALUE_TERMINATORS or (in_sexp and c in _OPERATORS):
+            elif c in _VALUE_TERMINATORS or (in_sexp and c in _OPERATORS) or BufferQueue.is_eof(c):
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val.as_symbol())
             else:
                 trans = ctx.immediate_transition(_unquoted_symbol_handler(c, ctx, is_field_name=is_field_name))
@@ -1179,6 +1191,7 @@ def _inf_or_operator_handler_factory(c_start, is_delegate=True):
             _, self = yield
             assert c == _
         maybe_inf = True
+        ctx = ctx.derive_ion_type(IonType.FLOAT)
         match_index = 0
         trans = ctx.immediate_transition(self)
         while True:
@@ -1186,7 +1199,7 @@ def _inf_or_operator_handler_factory(c_start, is_delegate=True):
                 if match_index < len(_INF_SEQUENCE):
                     maybe_inf = c == _INF_SEQUENCE[match_index]
                 else:
-                    if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
+                    if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS) or BufferQueue.is_eof(c):
                         yield ctx.event_transition(
                             IonEvent, IonEventType.SCALAR, IonType.FLOAT, c_start == _MINUS and _NEG_INF or _POS_INF
                         )
@@ -1276,7 +1289,7 @@ def _unquoted_symbol_handler(c, ctx, is_field_name=False):
     trans = ctx.immediate_transition(self)
     while True:
         if c not in _WHITESPACE:
-            if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
+            if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS) or BufferQueue.is_eof(c):
                 break
             if c not in _IDENTIFIER_CHARACTERS:
                 _illegal_character(c, ctx.derive_ion_type(IonType.SYMBOL))
@@ -1293,7 +1306,7 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
     """
     assert c == _DOLLAR_SIGN
     in_sexp = ctx.container.ion_type is IonType.SEXP
-    ctx = ctx.derive_unicode()
+    ctx = ctx.derive_unicode().derive_ion_type(IonType.SYMBOL)
     val = ctx.value
     val.append(c)
     prev = c
@@ -1304,7 +1317,7 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
     match_index = 1
     while True:
         if c not in _WHITESPACE:
-            if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS):
+            if prev in _WHITESPACE or c in _VALUE_TERMINATORS or c == _COLON or (in_sexp and c in _OPERATORS) or BufferQueue.is_eof(c):
                 break
             maybe_identifier = maybe_identifier and c in _DIGITS
             if maybe_ivm:
@@ -1579,25 +1592,34 @@ _sexp_handler = _container_start_handler_factory(IonType.SEXP)
 
 
 @coroutine
-def _read_data_handler(whence, ctx, complete):
+def _read_data_handler(whence, ctx, complete, can_flush):
     """Creates a co-routine for retrieving data up to a requested size.
 
     Args:
         whence (Coroutine): The co-routine to return to after the data is satisfied.
         ctx (_HandlerContext): The context for the read.
-        complete (Optional[bool]): True if STREAM_END should be emitted if no bytes are read or
+        complete (True|False): True if STREAM_END should be emitted if no bytes are read or
             available; False if INCOMPLETE should be emitted in that case.
+        can_flush (True|False): True if NEXT may be requested after INCOMPLETE is emitted as a result of this data
+            request. Mutually exclusive with 'complete'.
     """
+    assert not (complete and can_flush)
     trans = None
     queue = ctx.queue
 
     while True:
         data_event, self = (yield trans)
-        if data_event is not None and data_event.data is not None:
-            data = data_event.data
-            data_len = len(data)
-            if data_len > 0:
-                queue.extend(data)
+        if data_event is not None:
+            if data_event.data is not None:
+                data = data_event.data
+                data_len = len(data)
+                if data_len > 0:
+                    queue.extend(data)
+                    yield Transition(None, whence)
+            elif data_event.type is ReadEventType.NEXT:
+                if not can_flush:
+                    _illegal_character(4, ctx, "Unexpected EOF.")
+                queue.eof()
                 yield Transition(None, whence)
         trans = Transition(complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT, self)
 
@@ -1676,6 +1698,7 @@ def _container_handler(c, ctx):
     is_field_name = ctx.ion_type is IonType.STRUCT
     delimiter_required = False
     complete = ctx.depth == 0
+    can_flush = False
 
     def has_pending_symbol():
         return child_context and child_context.pending_symbol is not None
@@ -1698,7 +1721,7 @@ def _container_handler(c, ctx):
 
     while True:
         # Loop over all values in this container.
-        if c in ctx.container.end or c in ctx.container.delimiter:
+        if c in ctx.container.end or c in ctx.container.delimiter or BufferQueue.is_eof(c):
             symbol_event = pending_symbol_value()
             if symbol_event is not None:
                 yield symbol_event
@@ -1715,13 +1738,18 @@ def _container_handler(c, ctx):
                     ctx.whence
                 )
                 raise ValueError('Resumed a finished container handler.')
-            else:
+            elif c in ctx.container.delimiter:
                 if not delimiter_required:
                     _illegal_character(c, ctx.derive_child_context(None),
                                        'Encountered delimiter %s without preceding value.'
                                        % (_c(ctx.container.delimiter[0]),))
                 is_field_name = ctx.ion_type is IonType.STRUCT
                 delimiter_required = False
+                c = None
+            else:
+                assert BufferQueue.is_eof(c)
+                assert len(queue) == 0
+                yield ctx.read_data_event(self, complete=True)
                 c = None
         if c is not None and c not in _WHITESPACE:
             if c == _SLASH:
@@ -1748,7 +1776,7 @@ def _container_handler(c, ctx):
                     else:
                         assert not ctx.quoted_text
                         if len(queue) == 0:
-                            yield ctx.read_data_event(self, complete)
+                            yield ctx.read_data_event(self)
                         c = queue.read_byte()
                         if c == _COLON:
                             child_context = child_context.derive_annotation()
@@ -1776,6 +1804,7 @@ def _container_handler(c, ctx):
             container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
             quoted_start = c == _DOUBLE_QUOTE or c == _SINGLE_QUOTE
             complete = False
+            can_flush = False
             while True:
                 # Loop over all characters in the current token. A token is either a non-symbol value or a pending
                 # symbol, which may end up being a field name, annotation, or symbol value.
@@ -1791,9 +1820,12 @@ def _container_handler(c, ctx):
                             c = c.code_point
                     else:
                         if len(queue) == 0:
-                            yield ctx.read_data_event(self)
+                            yield ctx.read_data_event(self, can_flush=can_flush)
                         c = queue.read_byte()
                 trans, child_context = handler.send((c, handler))
+                can_flush = child_context and child_context.ion_type is not None and (child_context.ion_type.is_numeric or
+                                               (child_context.ion_type.is_text and
+                                                not ctx.quoted_text and not is_field_name))
                 next_transition = None
                 if not hasattr(trans, 'event'):
                     # This is a composite transition, i.e. it contains an event transition followed by an immediate
@@ -1821,7 +1853,7 @@ def _container_handler(c, ctx):
                         # The end of the value has been reached, and c needs to be updated
                         assert not ctx.quoted_text
                         if len(queue) == 0:
-                            yield ctx.read_data_event(self, complete)
+                            yield ctx.read_data_event(self, complete, can_flush)
                         c = queue.read_byte()
                     delimiter_required = ctx.container.is_delimited
                     if next_transition is None:
@@ -1844,7 +1876,7 @@ def _container_handler(c, ctx):
                     # This happens at the end of a comment within this container, or when a symbol token has been
                     # found. In both cases, an event should not be emitted. Read the next character and continue.
                     if len(queue) == 0:
-                        yield ctx.read_data_event(self, complete)
+                        yield ctx.read_data_event(self, complete, can_flush)
                     c = queue.read_byte()
                     break
                 # This is an immediate transition to a handler (may be the same one) for the current token.
@@ -1997,4 +2029,4 @@ def reader(queue=None, is_unicode=False):
         ion_type=None,  # Top level
         pending_symbol=None
     )
-    return reader_trampoline(_skip_trampoline(_container_handler(None, ctx)))
+    return reader_trampoline(_skip_trampoline(_container_handler(None, ctx)), allow_flush=True)
