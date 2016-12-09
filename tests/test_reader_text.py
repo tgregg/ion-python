@@ -670,13 +670,14 @@ _GOOD_SCALARS = (
 )
 
 
-def _scalar_event_pairs(data, events, delimiter):
+def _scalar_event_pairs(data, events, info):
     """Generates event pairs for all scalars.
 
     Each scalar is represented by a sequence whose first element is the raw data and whose following elements are the
     expected output events.
     """
     first = True
+    delimiter, in_container = info
     space_delimited = not (b',' in delimiter)
     for event in events:
         input_event = NEXT
@@ -687,12 +688,17 @@ def _scalar_event_pairs(data, events, delimiter):
                      (event.ion_type is IonType.STRING and
                       six.byte2int(b'"') != six.indexbytes(data, 0))):  # triple-quoted strings
                 # Because annotations and field names are symbols, a space delimiter after a symbol isn't enough to
-                # generate a symbol event. Similarly, triple-quoted strings may be followed by another triple-quoted
-                # string if only delimited by whitespace or comments. To address this issue, these types
-                # are delimited in these tests by another value - in this case, int 0 (but it could be anything).
+                # generate a symbol event immediately. Similarly, triple-quoted strings may be followed by another
+                # triple-quoted string if only delimited by whitespace or comments.
                 yield input_event, INC
-                yield e_read(b'0' + delimiter), event
-                input_event, event = (NEXT, e_int(0))
+                if in_container:
+                    # Within s-expressions, these types are delimited in these tests by another value - in this case,
+                    # int 0 (but it could be anything).
+                    yield e_read(b'0' + delimiter), event
+                    input_event, event = (NEXT, e_int(0))
+                else:
+                    # This is a top-level value, so it may be flushed with NEXT after INCOMPLETE.
+                    input_event, event = (NEXT, event)
             first = False
         yield input_event, event
 
@@ -704,8 +710,8 @@ _scalar_iter = partial(value_iter, _scalar_event_pairs, _GOOD_SCALARS)
 def _scalar_params():
     """Generates scalars as reader parameters."""
     while True:
-        delimiter = yield
-        for data, event_pairs in _scalar_iter(delimiter):
+        info = yield
+        for data, event_pairs in _scalar_iter(info):
             yield _P(
                 desc=data,
                 event_pairs=event_pairs + [(NEXT, INC)]
@@ -717,7 +723,8 @@ def _top_level_value_params(delimiter=b' ', is_delegate=False):
 
     The expectation is starting from an end of stream top-level context.
     """
-    for data, event_pairs in _scalar_iter(delimiter):
+    info = (delimiter, False)
+    for data, event_pairs in _scalar_iter(info):
         _, first = event_pairs[0]
         if first.event_type is IonEventType.INCOMPLETE:  # Happens with space-delimited symbol values.
             _, first = event_pairs[1]
@@ -734,11 +741,11 @@ def _top_level_value_params(delimiter=b' ', is_delegate=False):
 def _all_scalars_in_one_container_params():
     """Generates one parameter that contains all scalar events in a single container. """
     while True:
-        delimiter = yield
+        info = yield
 
         @listify
         def generate_event_pairs():
-            for data, event_pairs in _scalar_iter(delimiter):
+            for data, event_pairs in _scalar_iter(info):
                 pairs = ((i, o) for i, o in event_pairs)
                 while True:
                     try:
@@ -758,11 +765,11 @@ def _all_scalars_in_one_container_params():
         )
 
 
-def _collect_params(param_generator, delimiter):
+def _collect_params(param_generator, info):
     """Collects all output of the given coroutine into a single list."""
     params = []
     while True:
-        param = param_generator.send(delimiter)
+        param = param_generator.send(info)
         if param is None:
             return params
         params.append(param)
@@ -845,8 +852,8 @@ def _annotate_params(params, is_delegate=False):
     """Adds annotation wrappers for a given iterator of parameters."""
 
     while True:
-        delimiter = yield
-        params_list = _collect_params(params, delimiter)
+        info = yield
+        params_list = _collect_params(params, info)
         test_annotations, expected_annotations = next(_annotations_generator)
         for param in params_list:
             @listify
@@ -904,7 +911,7 @@ def _containerize_params(param_generator, with_skip=True, is_delegate=False, top
                      (IonType.SEXP, b'(//\n', b'/**/)', b'/**/'),
                      (IonType.STRUCT, b'{/**/', b'//\n}', b'/**/,')):
             ion_type = info[0]
-            params = _collect_params(param_generator, info[3])
+            params = _collect_params(param_generator, (info[3], True))
             for param in params:
                 @listify
                 def add_field_names(event_pairs):
@@ -1026,11 +1033,11 @@ _good_unicode_params = partial(_basic_params, _end, 'GOOD - UNICODE', u'')
     # All top-level values as individual data events, space-delimited.
     _top_level_value_params(),
     # All top-level values as one data event, space-delimited.
-    all_top_level_as_one_stream_params(_scalar_iter, b' '),
+    all_top_level_as_one_stream_params(_scalar_iter, (b' ', False)),
     # All top-level values as one data event, block comment-delimited.
-    all_top_level_as_one_stream_params(_scalar_iter, b'/*foo*/'),
+    all_top_level_as_one_stream_params(_scalar_iter, (b'/*foo*/', False)),
     # All top-level values as one data event, line comment-delimited.
-    all_top_level_as_one_stream_params(_scalar_iter, b'//foo\n'),
+    all_top_level_as_one_stream_params(_scalar_iter, (b'//foo\n', False)),
     # All annotated top-level values, space-delimited.
     _annotate_params(_top_level_value_params(is_delegate=True)),
     # All annotated top-level values, comment-delimited.

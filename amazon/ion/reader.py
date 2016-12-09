@@ -57,7 +57,7 @@ class BufferQueue(object):
         self.__segments.append(data)
         self.__size += len(data)
 
-    def eof(self):
+    def mark_eof(self):
         self.__segments.append(_EOF)
         self.__size += 1
 
@@ -126,7 +126,7 @@ class BufferQueue(object):
         segment = segments[0]
         segment_len = len(segment)
         offset = self.__offset
-        if segment is _EOF:
+        if BufferQueue.is_eof(segment):
             octet = _EOF
         else:
             octet = self.cp_to_int(segment, offset)
@@ -255,8 +255,10 @@ def reader_trampoline(start, allow_flush=False):
             # Only yield if there is an event.
             data_event = (yield trans.event)
             if trans.event.event_type.is_stream_signal:
-                if data_event.type is not ReadEventType.DATA and not allow_flush:
-                    raise TypeError('Reader expected data: %r' % (data_event,))
+                if data_event.type is not ReadEventType.DATA:
+                    if not allow_flush or not (trans.event.event_type is IonEventType.INCOMPLETE and
+                                               data_event.type is ReadEventType.NEXT):
+                        raise TypeError('Reader expected data: %r' % (data_event,))
             else:
                 if data_event.type is ReadEventType.DATA:
                     raise TypeError('Reader did not expect data')
@@ -288,8 +290,6 @@ def blocking_reader(reader, input, buffer_size=_DEFAULT_BUFFER_SIZE):
             data = input.read(buffer_size)
             if len(data) == 0:
                 # End of file.
-                #if ion_event.event_type is not IonEventType.STREAM_END:
-                #    raise EOFError('Premature EOF while parsing')
                 if ion_event.event_type is IonEventType.INCOMPLETE:
                     ion_event = reader.send(NEXT_EVENT)
                     continue
