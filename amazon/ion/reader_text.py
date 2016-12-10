@@ -365,8 +365,9 @@ class _HandlerContext(record(
             whence (Coroutine): The co-routine to return to after the data is satisfied.
             complete (Optional[bool]): True if STREAM_END should be emitted if no bytes are read or
                 available; False if INCOMPLETE should be emitted in that case.
+            can_flush (Optional[bool]): True if NEXT may be requested after INCOMPLETE is emitted as a result of this
+                data request.
         """
-        can_flush = can_flush and not complete
         return Transition(None, _read_data_handler(whence, self, complete, can_flush))
 
     def next_code_point(self, whence):
@@ -449,6 +450,8 @@ class _HandlerContext(record(
 
     def derive_ion_type(self, ion_type):
         """Derives a context with the given IonType."""
+        if ion_type is self.ion_type:
+            return self
         return _HandlerContext(
             self.container,
             self.queue,
@@ -579,7 +582,7 @@ def _number_zero_start_handler(c, ctx):
     ctx = ctx.derive_ion_type(IonType.INT)
     ctx.value.append(c)
     c, _ = yield
-    if c in _VALUE_TERMINATORS:
+    if _ends_value(c):
         trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_decimal_int(ctx.value))
         if c == _SLASH:
             trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
@@ -1604,9 +1607,8 @@ def _read_data_handler(whence, ctx, complete, can_flush):
         complete (True|False): True if STREAM_END should be emitted if no bytes are read or
             available; False if INCOMPLETE should be emitted in that case.
         can_flush (True|False): True if NEXT may be requested after INCOMPLETE is emitted as a result of this data
-            request. Mutually exclusive with 'complete'.
+            request.
     """
-    assert not (complete and can_flush)
     trans = None
     queue = ctx.queue
 
@@ -1621,7 +1623,7 @@ def _read_data_handler(whence, ctx, complete, can_flush):
                     yield Transition(None, whence)
             elif data_event.type is ReadEventType.NEXT:
                 queue.mark_eof()
-                if not can_flush:  # TODO add negative testing of NEXT when not allowed.
+                if not can_flush:
                     _illegal_character(queue.read_byte(), ctx, "Unexpected EOF.")
                 yield Transition(None, whence)
         trans = Transition(complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT, self)
@@ -1691,6 +1693,15 @@ _VALUE_START_TABLE = _whitelist(
     fallback=_symbol_or_keyword_handler
 )
 
+_IMMEDIATE_FLUSH_TABLE = _whitelist(
+    _merge_dicts(
+        (_DIGITS, True),
+        (_LETTERS, True),
+        {_DOLLAR_SIGN: True},
+    ),
+    fallback=lambda: False
+)
+
 
 @coroutine
 def _container_handler(c, ctx):
@@ -1755,6 +1766,7 @@ def _container_handler(c, ctx):
                 yield ctx.read_data_event(self, complete=True)
                 c = None
         if c is not None and c not in _WHITESPACE:
+            can_flush = False
             if c == _SLASH:
                 if child_context is None:
                     # This is the start of a new child value (or, if this is a comment, a new value will start after the
@@ -1804,10 +1816,10 @@ def _container_handler(c, ctx):
                     handler = _FIELD_NAME_START_TABLE[c](c, child_context)
                 else:
                     handler = _VALUE_START_TABLE[c](c, child_context)  # Initialize the new handler
+                    can_flush = _IMMEDIATE_FLUSH_TABLE[c]
             container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
             quoted_start = c == _DOUBLE_QUOTE or c == _SINGLE_QUOTE
             complete = False
-            can_flush = False
             while True:
                 # Loop over all characters in the current token. A token is either a non-symbol value or a pending
                 # symbol, which may end up being a field name, annotation, or symbol value.
@@ -1827,6 +1839,7 @@ def _container_handler(c, ctx):
                         c = queue.read_byte()
                 trans, child_context = handler.send((c, handler))
                 can_flush = child_context is not None and \
+                    child_context.depth == 0 and \
                     child_context.ion_type is not None and \
                     (
                         child_context.ion_type.is_numeric or

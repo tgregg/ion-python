@@ -284,6 +284,60 @@ _SKIP = (
     ],
 )
 
+_NEXT_ERROR = (NEXT, IonException)
+_NEXT_INC = (NEXT, INC)
+_NEXT_END = (NEXT, END)
+
+
+_GOOD_FLUSH = (
+    [(e_read(b'0'), INC), (NEXT, e_int(0)), _NEXT_END],
+    [(e_read(b'1'), INC), (NEXT, e_int(1)), _NEXT_END],
+    [(e_read(b'-0'), INC), (NEXT, e_int(0)), _NEXT_END],
+    [(e_read(b'123'), INC), (NEXT, e_int(123)), _NEXT_END],
+    [(e_read(b'123.'), INC), (NEXT, e_decimal(_d(123))), _NEXT_END],
+    [(e_read(b'1.23e-4'), INC), (NEXT, e_float(1.23e-4)), _NEXT_END],
+    [(e_read(b'2000-01-01'), INC), (NEXT, e_timestamp(_ts(2000, 1, 1, precision=_tp.DAY))), _NEXT_END],
+    [(e_read(b"a"), INC), (NEXT, e_symbol(_st(u'a'))), _NEXT_END],
+    [(e_read(b"'abc'"), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END],
+    [(e_read(b"$abc"), INC), (NEXT, e_symbol(_st(u'$abc'))), _NEXT_END],
+    [(e_read(b"$"), INC), (NEXT, e_symbol(_st(u'$'))), _NEXT_END],
+    [(e_read(b"$10"), INC), (NEXT, e_symbol(_sid(10))), _NEXT_END, (e_read(b'0'), INC), (NEXT, e_int(0)), _NEXT_END],
+    [(e_read(b'abc'), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END, (e_read(b'def'), INC),
+     (NEXT, e_symbol(_st(u'def'))), _NEXT_END],
+    [(e_read(b"'''abc'''"), INC), (NEXT, e_string(u'abc')), (NEXT, END), (e_read(b"'''def'''"), INC),
+     (NEXT, e_string(u'def')), _NEXT_END],
+    # [(e_read(b'//'), INC), _NEXT_END],  # TODO support this to match ion-java
+)
+
+_BAD_FLUSH = (
+    [(e_read(b'123_'), INC), _NEXT_ERROR],
+    [(e_read(b'123e'), INC), _NEXT_ERROR],
+    [(e_read(b'123e-'), INC), _NEXT_ERROR],
+    [(e_read(b'0x'), INC), _NEXT_ERROR],
+    [(e_read(b'2000-01-'), INC), _NEXT_ERROR],
+    [(e_read(b'"'), INC), _NEXT_ERROR],
+    [(e_read(b'/'), INC), _NEXT_ERROR],
+    [(e_read(b'/*'), INC), _NEXT_ERROR],
+    [(e_read(b'"abc'), INC), _NEXT_ERROR],
+    [(e_read(b"'abc"), INC), _NEXT_ERROR],
+    [(e_read(b"'''abc"), INC), _NEXT_ERROR],
+    [(e_read(b"{{abc"), INC), _NEXT_ERROR],
+    [(e_read(b'{{"abc"'), INC), _NEXT_ERROR],
+    [(e_read(b"(abc"), e_start_sexp()), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"[abc "), e_start_list()), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"{abc:def "), e_start_struct()), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"{abc "), e_start_struct()), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"{abc: "), e_start_struct()), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"(abc "), e_start_sexp()), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"[abc,"), e_start_list()), (NEXT, e_symbol(_st(u'abc'))), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"{abc:def,"), e_start_struct()), (NEXT, e_symbol(_st(u'def'), field_name=_st(u'abc'))),
+     _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"abc::"), INC), _NEXT_ERROR],
+    [(e_read(b"'abc'::"), INC), _NEXT_ERROR],
+    [(e_read(b'abc'), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END, (e_read(b'::123 '), IonException)],
+    [(e_read(b'$10'), INC), (NEXT, e_symbol(_sid(10))), _NEXT_END, (e_read(b'::123 '), IonException)],
+)
+
 
 def _good_container(start, end, *events):
     return (start(),) + events + (end(),)
@@ -1030,6 +1084,8 @@ _good_unicode_params = partial(_basic_params, _end, 'GOOD - UNICODE', u'')
     _UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),
+    _paired_params(_GOOD_FLUSH, 'GOOD FLUSH'),
+    _paired_params(_BAD_FLUSH, 'BAD FLUSH'),
     # All top-level values as individual data events, space-delimited.
     _top_level_value_params(),
     # All top-level values as one data event, space-delimited.
