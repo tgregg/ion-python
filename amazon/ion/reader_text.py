@@ -2029,8 +2029,45 @@ def reader(queue=None, is_unicode=False):
             is not in the middle of parsing a value.
 
             Receives :class:`DataEvent`, with :class:`ReadEventType` of ``NEXT`` or ``SKIP``
-            to iterate over values, or ``DATA`` if the last event was a ``INCOMPLETE``
-            or ``STREAM_END`` event type.
+            to iterate over values; ``DATA`` or ``NEXT`` if the last event type was ``INCOMPLETE``;
+            or ``DATA`` if the last event type was ``STREAM_END``.
+
+            When the reader receives ``NEXT`` after yielding ``INCOMPLETE``, this signals to the reader
+            that no further data is coming, and that any pending data should be flushed as either parse
+            events or errors. This is **only** valid at the top-level, and will **only** result in a parse
+            event if the last character encountered...
+                * was a digit or a decimal point in a non-timestamp numeric value; OR
+                * ended a valid partial timestamp; OR
+                * was part of an unquoted symbol token, or whitespace or the end of a comment following
+                  an unquoted symbol token (as long as no colons were encountered after the token); OR
+                * was the closing quote of a quoted symbol token, or whitespace or the end of a comment
+                  following a quoted symbol token (as long as no colons were encountered after the
+                  token); OR
+                * was the final closing quote of a long string, or whitespace or the end of a comment
+                  following a long string.
+            If the reader successfully yields a parse event as a result of this, ``NEXT`` is the only
+            input that may immediately follow, with ``STREAM_END`` the only possible response from the
+            reader. After that ``STREAM_END``, the user may later provide ``DATA`` to resume reading.
+            If this occurs, the new data will be interpreted as if it were at the start of the stream
+            (i.e. it can never continue the previous value), except that it occurs within the same symbol
+            table context. This has the following implications (where ``<FLUSH>`` stands for the
+            (``INCOMPLETE``, ``NEXT``) transaction):
+                * If the previously-emitted value was a numeric value (``int``, ``float``, ``decimal``,
+                  ``timestamp``), the new data will never extend that value, even if it would be a valid
+                  continuation. For example, ``123<FLUSH>456`` will always be emitted as two parse events
+                  (ints ``123`` and ``456``), even though it would have been interpreted as ``123456``
+                  without the ``<FLUSH>``.
+                * If the previously-emitted value was a symbol value or long string, the new data will
+                  be interpreted as the start of a new value. For example, ``abc<FLUSH>::123`` will be
+                  emitted as the symbol value ``'abc'``, followed by an error upon encountering ':' at the
+                  start of a value, even though it would have been interpreted as the ``int`` ``123``
+                  annotated with ``'abc'`` without the ``<FLUSH>``. The input ``abc<FLUSH>abc`` will be
+                  emitted as the symbol value ``'abc'`` (represented by a :class:`SymbolToken`), followed by
+                  another symbol value ``'abc'`` (represented by a ``SymbolToken`` with the same symbol ID),
+                  even though it would have been interpreted as ``'abcabc'`` without the ``<FLUSH>``.
+                  Similarly, ``'''abc'''<FLUSH>'''def'''`` will the interpreted as two strings (``'abc'``
+                  and ``'def'``), even though it would have been interpreted as ``'abcdef'`` without the
+                  ``<FLUSH>``.
 
             ``SKIP`` is only allowed within a container. A reader is *in* a container
             when the ``CONTAINER_START`` event type is encountered and *not in* a container
