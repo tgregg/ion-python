@@ -207,6 +207,7 @@ _INCOMPLETE = (
     (b'\'foo\'',),  # Might be an annotation.
     (b'\'\'\'foo\'\'\'/**/',),  # Might be followed by another triple-quoted string.
     (b'\'\'\'\'',),  # Might be followed by another triple-quoted string.
+    (b"'''abc''''def'", e_string(u'abc'),),
     (b'123',),  # Might have more digits.
     (b'42/',),  # The / might start a comment
     (b'0/',),
@@ -306,7 +307,16 @@ _GOOD_FLUSH = (
      (NEXT, e_symbol(_st(u'def'))), _NEXT_END],
     [(e_read(b"'''abc'''"), INC), (NEXT, e_string(u'abc')), (NEXT, END), (e_read(b"'''def'''"), INC),
      (NEXT, e_string(u'def')), _NEXT_END],
-    # [(e_read(b'//'), INC), _NEXT_END],  # TODO support this to match ion-java
+    [(e_read(b"'''abc''''def'"), e_string(u'abc')), _NEXT_INC, (NEXT, e_symbol(_st(u'def'))), _NEXT_END],
+    [(e_read(b"'''abc'''''"), INC), (NEXT, e_string(u'abc')), (NEXT, e_symbol(_st(u''))), _NEXT_END],
+    [(e_read(b'null'), INC), (NEXT, e_null()), _NEXT_END],
+    [(e_read(b'null.string'), INC), (NEXT, e_string()), _NEXT_END],
+    [(e_read(b'+inf'), INC), (NEXT, e_float(_POS_INF)), _NEXT_END],
+    [(e_read(b'nan'), INC), (NEXT, e_float(_NAN)), _NEXT_END],
+    [(e_read(b'true'), INC), (NEXT, e_bool(True)), _NEXT_END],
+    [(e_read(b'//'), INC), _NEXT_END],  # Matches ion-java - termination of line comment with newline not required.
+    #[(e_read(b'abc//123'), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END],  # TODO
+    #[(e_read(b"'abc'//123"), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END],
 )
 
 _BAD_FLUSH = (
@@ -318,13 +328,18 @@ _BAD_FLUSH = (
     [(e_read(b'"'), INC), _NEXT_ERROR],
     [(e_read(b'/'), INC), _NEXT_ERROR],
     [(e_read(b'/*'), INC), _NEXT_ERROR],
+    [(e_read(b'+in'), INC), _NEXT_ERROR],
+    [(e_read(b'null.'), INC), _NEXT_ERROR],
+    [(e_read(b'null.str'), INC), _NEXT_ERROR],
     [(e_read(b'"abc'), INC), _NEXT_ERROR],
     [(e_read(b"'abc"), INC), _NEXT_ERROR],
     [(e_read(b"'''abc"), INC), _NEXT_ERROR],
+    [(e_read(b"'''abc''''"), INC), _NEXT_ERROR],
     [(e_read(b"{{abc"), INC), _NEXT_ERROR],
     [(e_read(b'{{"abc"'), INC), _NEXT_ERROR],
     [(e_read(b"(abc"), e_start_sexp()), _NEXT_INC, _NEXT_ERROR],
     [(e_read(b"[abc "), e_start_list()), _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"['abc' "), e_start_list()), _NEXT_INC, _NEXT_ERROR],
     [(e_read(b"{abc:def "), e_start_struct()), _NEXT_INC, _NEXT_ERROR],
     [(e_read(b"{abc "), e_start_struct()), _NEXT_INC, _NEXT_ERROR],
     [(e_read(b"{abc: "), e_start_struct()), _NEXT_INC, _NEXT_ERROR],
@@ -332,6 +347,7 @@ _BAD_FLUSH = (
     [(e_read(b"[abc,"), e_start_list()), (NEXT, e_symbol(_st(u'abc'))), _NEXT_INC, _NEXT_ERROR],
     [(e_read(b"{abc:def,"), e_start_struct()), (NEXT, e_symbol(_st(u'def'), field_name=_st(u'abc'))),
      _NEXT_INC, _NEXT_ERROR],
+    [(e_read(b"abc:"), INC), _NEXT_ERROR],
     [(e_read(b"abc::"), INC), _NEXT_ERROR],
     [(e_read(b"'abc'::"), INC), _NEXT_ERROR],
     [(e_read(b'abc'), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END, (e_read(b'::123 '), IonException)],

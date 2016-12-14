@@ -305,7 +305,7 @@ def _as_symbol(value):
 
 class _HandlerContext(record(
     'container', 'queue', 'field_name', 'annotations', 'depth', 'whence',
-    'value', 'ion_type', 'pending_symbol', ('quoted_text', False)
+    'value', 'ion_type', 'pending_symbol', ('quoted_text', False), ('line_comment', False)
 )):
     """A context for a handler co-routine.
 
@@ -324,6 +324,7 @@ class _HandlerContext(record(
         pending_symbol (Optional[bytearray]): A pending symbol, which may end up being an annotation,
             field name, or symbol value.
         quoted_text (Optional[bool]): True if this context represents quoted text; otherwise, False.
+        line_comment (Optional[bool]): True if this context represents a line comment; otherwise, False.
     """
 
     def event_transition(self, event_cls, event_type,
@@ -446,6 +447,21 @@ class _HandlerContext(record(
             bytearray(),  # children start without a value
             None,
             None
+        )
+
+    def derive_line_comment(self, is_line_comment=True):
+        return _HandlerContext(
+            self.container,
+            self.queue,
+            self.field_name,
+            self.annotations,
+            self.depth,
+            self.whence,
+            self.value,
+            self.ion_type,
+            self.pending_symbol,
+            self.quoted_text,
+            is_line_comment
         )
 
     def derive_ion_type(self, ion_type):
@@ -937,6 +953,7 @@ def _comment_handler(c, ctx, whence):
     assert c == _SLASH
     c, self = yield
     if c == _SLASH:
+        ctx = ctx.derive_line_comment()
         block_comment = False
     elif c == _ASTERISK:
         block_comment = True
@@ -952,7 +969,8 @@ def _comment_handler(c, ctx, whence):
                 done = True
             prev = c
         else:
-            if c == _NEWLINE:
+            if c == _NEWLINE or BufferQueue.is_eof(c):
+                #ctx = ctx.derive_line_comment(False)  # TODO are there any cases that would make this necessary?
                 done = True
     yield ctx.immediate_transition(whence, trans_cls=_SelfDelimitingTransition)
 
@@ -1034,10 +1052,12 @@ def _long_string_handler(c, ctx, is_field_name=False):
                             _illegal_character(c, ctx, 'Delimiter %s not found after value.'
                                                % (_c(ctx.container.delimiter[0]),))
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value.as_text())
-                        # c was read as a single byte. Re-read it as a code point.
-                        ctx.queue.unread(c)
-                        c, _ = yield here_in_data
                         if quotes == 1:
+                            if BufferQueue.is_eof(c):
+                                _illegal_character(c, ctx, "Unexpected EOF.")
+                            # c was read as a single byte. Re-read it as a code point.
+                            ctx.queue.unread(c)
+                            c, _ = yield here_in_data
                             trans = _composite_transition(
                                 trans[0],
                                 ctx,
@@ -1077,7 +1097,7 @@ def _typed_null_handler(c, ctx):
     trans = ctx.immediate_transition(self)
     while True:
         if done:
-            if c in _VALUE_TERMINATORS or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
+            if _ends_value(c) or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
                 trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, nxt.ion_type, None)
             else:
                 _illegal_character(c, ctx, 'Illegal null type.')
@@ -1819,7 +1839,6 @@ def _container_handler(c, ctx):
                     can_flush = _IMMEDIATE_FLUSH_TABLE[c]
             container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
             quoted_start = c == _DOUBLE_QUOTE or c == _SINGLE_QUOTE
-            complete = False
             while True:
                 # Loop over all characters in the current token. A token is either a non-symbol value or a pending
                 # symbol, which may end up being a field name, annotation, or symbol value.
@@ -1840,10 +1859,14 @@ def _container_handler(c, ctx):
                 trans, child_context = handler.send((c, handler))
                 can_flush = child_context is not None and \
                     child_context.depth == 0 and \
-                    child_context.ion_type is not None and \
                     (
-                        child_context.ion_type.is_numeric or
-                        (child_context.ion_type.is_text and not ctx.quoted_text and not is_field_name)
+                        (
+                            child_context.ion_type is not None and
+                            (
+                                child_context.ion_type.is_numeric or
+                                (child_context.ion_type.is_text and not ctx.quoted_text and not is_field_name)
+                            )
+                        ) or child_context.line_comment
                     )
                 next_transition = None
                 if not hasattr(trans, 'event'):
@@ -1881,8 +1904,9 @@ def _container_handler(c, ctx):
                         trans = next_transition
                 elif self is trans.delegate:
                     assert next_transition is None
+                    complete = False
                     self_delimiting = isinstance(trans, _SelfDelimitingTransition)
-                    can_flush = can_flush or self_delimiting
+                    can_flush = can_flush or (self_delimiting and ctx.depth == 0)
                     if is_field_name:
                         if c == _COLON or not self_delimiting:
                             break
@@ -2036,8 +2060,9 @@ def reader(queue=None, is_unicode=False):
             that no further data is coming, and that any pending data should be flushed as either parse
             events or errors. This is **only** valid at the top-level, and will **only** result in a parse
             event if the last character encountered...
-                * was a digit or a decimal point in a non-timestamp numeric value; OR
+                * was a digit or a decimal point in a non-timestamp, non-keyword numeric value; OR
                 * ended a valid partial timestamp; OR
+                * ended a keyword value (special floats, booleans, ``null``, and typed nulls); OR
                 * was part of an unquoted symbol token, or whitespace or the end of a comment following
                   an unquoted symbol token (as long as no colons were encountered after the token); OR
                 * was the closing quote of a quoted symbol token, or whitespace or the end of a comment
@@ -2046,8 +2071,13 @@ def reader(queue=None, is_unicode=False):
                 * was the final closing quote of a long string, or whitespace or the end of a comment
                   following a long string.
             If the reader successfully yields a parse event as a result of this, ``NEXT`` is the only
-            input that may immediately follow, with ``STREAM_END`` the only possible response from the
-            reader. After that ``STREAM_END``, the user may later provide ``DATA`` to resume reading.
+            input that may immediately follow. At that point, there are only two possible responses from
+            the reader:
+                * If the last character read was the closing quote of an empty symbol following a long
+                  string, the reader will emit a parse event representing a symbol value with empty text.
+                  The next reader input/output event pair must be (``NEXT``, ``STREAM_END``).
+                * Otherwise, the reader will emit ``STREAM_END``.
+            After that ``STREAM_END``, the user may later provide ``DATA`` to resume reading.
             If this occurs, the new data will be interpreted as if it were at the start of the stream
             (i.e. it can never continue the previous value), except that it occurs within the same symbol
             table context. This has the following implications (where ``<FLUSH>`` stands for the
