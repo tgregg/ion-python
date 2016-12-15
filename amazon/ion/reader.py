@@ -238,6 +238,9 @@ def reader_trampoline(start, allow_flush=False):
         the transition delegate, immediately.
     Args:
         start: The reader co-routine to initially delegate to.
+        allow_flush(Optional[bool]): True if this reader supports receiving ``NEXT`` after
+            yielding ``INCOMPLETE`` to trigger an attempt to flush pending parse events,
+            otherwise False.
 
     Yields:
         amazon.ion.core.IonEvent: the result of parsing.
