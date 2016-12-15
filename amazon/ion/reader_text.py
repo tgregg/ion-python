@@ -956,6 +956,9 @@ def _comment_handler(c, ctx, whence):
         ctx = ctx.derive_line_comment()
         block_comment = False
     elif c == _ASTERISK:
+        if ctx.line_comment:
+            # This happens when a block comment immediately follows a line comment.
+            ctx = ctx.derive_line_comment(False)
         block_comment = True
     else:
         _illegal_character(c, ctx, 'Illegal character sequence "/%s".' % (_c(c),))
@@ -970,7 +973,6 @@ def _comment_handler(c, ctx, whence):
             prev = c
         else:
             if c == _NEWLINE or BufferQueue.is_eof(c):
-                #ctx = ctx.derive_line_comment(False)  # TODO are there any cases that would make this necessary?
                 done = True
     yield ctx.immediate_transition(whence, trans_cls=_SelfDelimitingTransition)
 
@@ -1278,6 +1280,8 @@ def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition, value=None):
     """Returns a transition which ends the current symbol token."""
     if value is None:
         value = ctx.value
+    if ctx.quoted_text:
+        ctx = ctx.derive_unquoted_text()
     if is_field_name or c in _SYMBOL_TOKEN_TERMINATORS or trans_cls is _SelfDelimitingTransition:
         # This might be an annotation or a field name.
         ctx = ctx.derive_pending_symbol(value)
@@ -1866,7 +1870,11 @@ def _container_handler(c, ctx):
                                 child_context.ion_type.is_numeric or
                                 (child_context.ion_type.is_text and not ctx.quoted_text and not is_field_name)
                             )
-                        ) or child_context.line_comment
+                        ) or
+                        (
+                            child_context.line_comment and
+                            not is_value_decorated()
+                        )
                     )
                 next_transition = None
                 if not hasattr(trans, 'event'):
@@ -1904,19 +1912,21 @@ def _container_handler(c, ctx):
                         trans = next_transition
                 elif self is trans.delegate:
                     assert next_transition is None
+                    child_context = child_context.derive_ion_type(None)  # The next token will determine the type.
                     complete = False
                     self_delimiting = isinstance(trans, _SelfDelimitingTransition)
-                    can_flush = can_flush or (self_delimiting and ctx.depth == 0)
                     if is_field_name:
+                        assert not can_flush
                         if c == _COLON or not self_delimiting:
                             break
                     elif has_pending_symbol():
-                        if not self_delimiting:
+                        can_flush = ctx.depth == 0
+                        if not self_delimiting or child_context.line_comment:
                             break
                     elif self_delimiting:
-                        # There isn't a pending field name or pending annotations. If this is at the top level,
+                        # This is the end of a comment. If this is at the top level and is un-annotated,
                         # it may end the stream.
-                        complete = ctx.depth == 0
+                        complete = ctx.depth == 0 and not is_value_decorated()
                     # This happens at the end of a comment within this container, or when a symbol token has been
                     # found. In both cases, an event should not be emitted. Read the next character and continue.
                     if len(queue) == 0:
