@@ -28,7 +28,7 @@ import six
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
     IonEventType, IonThunkEvent, TimestampPrecision, timestamp, ION_VERSION_MARKER_EVENT
 from amazon.ion.exceptions import IonException
-from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr
+from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr, CodePointArray
 from amazon.ion.symbols import SymbolToken, TEXT_ION_1_0
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
 
@@ -256,44 +256,6 @@ class _CodePointHolder:
     """Holds a _CodePoint for passing between co-routines."""
     def __init__(self):
         self.code_point = None
-
-
-class CodePointArray(collections.MutableSequence):
-    """A mutable sequence of code points. Used in place of bytearray() for text values."""
-    def __init__(self, initial_bytes=None):
-        self.__text = u''
-        if initial_bytes is not None:
-            for b in initial_bytes:
-                self.append(b)
-
-    def append(self, value):
-        self.__text += _c(value)
-
-    def as_symbol(self):
-        return SymbolToken(self.__text, sid=None, location=None)
-
-    def as_text(self):
-        return self.__text
-
-    def __len__(self):
-        return len(self.__text)
-
-    def __repr__(self):
-        return 'CodePointArray(text=%s)' % (self.__text,)
-
-    __str__ = __repr__
-
-    def insert(self, index, value):
-        raise ValueError('Attempted to add code point in middle of sequence')
-
-    def __setitem__(self, index, value):
-        raise ValueError('Attempted to set code point in middle of sequence')
-
-    def __getitem__(self, index):
-        return self.__text[index]
-
-    def __delitem__(self, index):
-        raise ValueError('Attempted to delete from code point sequence.')
 
 
 def _as_symbol(value):
@@ -997,6 +959,12 @@ def _sexp_slash_handler(c, ctx, whence=None, pending_event=None):
         yield ctx.immediate_transition(_operator_symbol_handler(_SLASH, ctx))
 
 
+_SINGLE_QUOTES = [
+    b"",
+    b"'",
+    b"''"
+]
+
 @coroutine
 def _long_string_handler(c, ctx, is_field_name=False):
     """Handles triple-quoted strings. Remains active until a value other than a long string is encountered."""
@@ -1039,7 +1007,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
                     _illegal_character(c, ctx, 'Character out of range [%d, %d] for this type.'
                                        % (_MIN_QUOTED_CHAR, max_char,))
                 # Any quotes found in the meantime are part of the data
-                val.extend([_SINGLE_QUOTE]*quotes)
+                val.extend(_SINGLE_QUOTES[quotes])
                 val.append(c)
                 quotes = 0
             else:

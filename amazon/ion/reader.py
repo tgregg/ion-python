@@ -19,10 +19,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import collections
+
 import six
 
 from collections import deque
 
+from amazon.ion.symbols import SymbolToken
 from .core import DataEvent, IonEventType, Transition
 from .core import ION_STREAM_END_EVENT
 from .util import coroutine, Enum
@@ -30,6 +33,52 @@ from .util import coroutine, Enum
 
 def safe_unichr(c):
     return (hasattr(c, 'char') and len(c.char) > 1) and c.char or six.unichr(c)
+
+
+class CodePointArray(collections.MutableSequence):
+    """A mutable sequence of code points. Used in place of bytearray() for text values."""
+    def __init__(self, initial_bytes=None):
+        self.__text = u''
+        if initial_bytes is not None:
+            for b in initial_bytes:
+                self.append(b)
+
+    def append(self, value):
+        self.__text += safe_unichr(value)
+
+    def extend(self, values):
+        if isinstance(values, six.text_type):
+            self.__text += values
+        else:
+            assert isinstance(values, six.binary_type)
+            for b in six.iterbytes(values):
+                self.append(b)
+
+    def as_symbol(self):
+        return SymbolToken(self.__text, sid=None, location=None)
+
+    def as_text(self):
+        return self.__text
+
+    def __len__(self):
+        return len(self.__text)
+
+    def __repr__(self):
+        return 'CodePointArray(text=%s)' % (self.__text,)
+
+    __str__ = __repr__
+
+    def insert(self, index, value):
+        raise ValueError('Attempted to add code point in middle of sequence.')
+
+    def __setitem__(self, index, value):
+        raise ValueError('Attempted to set code point in middle of sequence.')
+
+    def __getitem__(self, index):
+        return self.__text[index]
+
+    def __delitem__(self, index):
+        raise ValueError('Attempted to delete from code point sequence.')
 
 
 _EOF = b'\x04'  # End of transmission character.
@@ -41,6 +90,7 @@ class BufferQueue(object):
         self.__segments = deque()
         self.__offset = 0
         self.__size = 0
+        self.__data_cls = CodePointArray if is_unicode else bytearray
         self.position = 0
         self.is_unicode = is_unicode
 
@@ -48,12 +98,16 @@ class BufferQueue(object):
     def is_eof(c):
         return c is _EOF  # Note reference equality, ensuring that the EOF literal is still illegal as part of the data.
 
+    @staticmethod
+    def _incompatible_types(is_unicode, data):
+        raise ValueError('Incompatible input data types. Expected %r, got %r.'
+                         % (six.text_type if is_unicode else six.binary_type, type(data)))
+
     def extend(self, data):
         # TODO Determine if there are any other accumulation strategies that make sense.
         # TODO Determine if we should use memoryview to avoid copying.
         if not (self.is_unicode ^ isinstance(data, six.binary_type)):
-            raise ValueError('Incompatible input data types. Expected %r, got %r.'
-                             % (self.is_unicode and six.text_type or six.binary_type, type(data)))
+            BufferQueue._incompatible_types(self.is_unicode, data)
         self.__segments.append(data)
         self.__size += len(data)
 
@@ -71,7 +125,7 @@ class BufferQueue(object):
         segments = self.__segments
         offset = self.__offset
 
-        data = bytearray()
+        data = self.__data_cls()
         while length > 0:
             segment = segments[0]
             segment_off = offset
@@ -82,13 +136,13 @@ class BufferQueue(object):
             if segment_off == 0 and segment_read_len == segment_rem:
                 # consume an entire segment
                 if skip:
-                    segment_slice = b''
+                    segment_slice = u'' if self.is_unicode else b''
                 else:
                     segment_slice = segment
             else:
                 # Consume a part of the segment.
                 if skip:
-                    segment_slice = b''
+                    segment_slice = u'' if self.is_unicode else b''
                 else:
                     segment_slice = segment[segment_off:segment_off + segment_read_len]
                 offset = 0
@@ -104,7 +158,10 @@ class BufferQueue(object):
                 return segment_slice
             data.extend(segment_slice)
             length -= segment_read_len
-        return data
+        if self.is_unicode:
+            return data.as_text()
+        else:
+            return data
 
     def cp_to_int(self, segment, offset):
         b = six.indexbytes(segment, offset)
@@ -142,10 +199,21 @@ class BufferQueue(object):
     def unread(self, c):
         if self.position < 1:
             raise IndexError('Cannot unread an empty buffer queue.')
-        c = self.int_to_cp(c)
+        if isinstance(c, six.text_type):
+            if not self.is_unicode:
+                BufferQueue._incompatible_types(self.is_unicode, c)
+        else:
+            c = self.int_to_cp(c)
         num_code_units = self.is_unicode and len(c) or 1
         if self.__offset == 0:
-            self.__segments.appendleft([c])
+            if num_code_units == 1 and six.PY3:
+                if self.is_unicode:
+                    segment = c
+                else:
+                    segment = six.int2byte(c)
+            else:
+                segment = c
+            self.__segments.appendleft(segment)
         else:
             self.__offset -= num_code_units
 
