@@ -12,6 +12,7 @@
 # specific language governing permissions and limitations under the
 # License.
 from datetime import datetime, timedelta
+from functools import partial
 from io import BytesIO
 
 from decimal import Decimal
@@ -32,6 +33,8 @@ from amazon.ion.writer_binary_raw import _serialize_symbol, _write_length
 from tests.writer_util import VARUINT_END_BYTE, ION_ENCODED_INT_ZERO, SIMPLE_SCALARS_MAP
 from tests import parametrize
 
+
+_st = partial(SymbolToken, sid=None, location=None)
 
 class Parameter(record('desc', 'obj', 'expected', 'has_symbols', ('stream', False))):
     def __str__(self):
@@ -177,7 +180,7 @@ def generate_annotated_values(scalars_map, container_map):
         obj = value_p.obj
         if not isinstance(obj, _IonNature):
             continue
-        obj.ion_annotations = (SymbolToken(u'annot1', None), SymbolToken(u'annot2', None),)
+        obj.ion_annotations = (_st(u'annot1'), _st(u'annot2'),)
         annot_length = 2  # 10 and 11 each fit in one VarUInt byte
         annot_length_length = 1  # 2 fits in one VarUInt byte
         value_length = len(value_p.expected)
@@ -256,7 +259,12 @@ _ROUNDTRIPS = [
     u'abc',
     u'abcdefghijklmno',
     u'a\U0001f4a9c',
-    u'a\u0009\x0a\x0dc',
+    u'a\u3000\x20c',
+    _st(u''),
+    _st(u'abc'),
+    _st(u'abcdefghijklmno'),
+    _st(u'a\U0001f4a9c'),
+    _st(u'a\u3000\x20c'),
     b'abcd',
     IonPyBytes.from_value(IonType.CLOB, b'abcd'),
     [[[]]],
@@ -282,23 +290,32 @@ _ROUNDTRIPS = [
 
 def _generate_roundtrips(roundtrips):
     for is_binary in (True, False):
-        def _to_obj(obj, to_type=None, annotations=()):
+
+        def _adjust_sids(annotations=()):
+            if is_binary and isinstance(obj, SymbolToken):
+                return SymbolToken(obj.text, 10 + len(annotations))
+            return obj
+
+        def _to_obj(to_type=None, annotations=()):
             if to_type is None:
                 to_type = ion_type
-            return _FROM_ION_TYPE[ion_type].from_value(to_type, obj, annotations=annotations), is_binary
+            obj_out = _adjust_sids(annotations)
+            return _FROM_ION_TYPE[ion_type].from_value(to_type, obj_out, annotations=annotations), is_binary
+
         for obj in roundtrips:
+            obj = _adjust_sids()
             yield obj, is_binary
             if not isinstance(obj, _IonNature):
                 ion_type = _ion_type(obj)
-                yield _to_obj(obj)
+                yield _to_obj()
             else:
                 ion_type = obj.ion_type
             if isinstance(obj, IonPyNull):
                 obj = None
-            yield _to_obj(obj, annotations=(u'annot1', u'annot2'))
+            yield _to_obj(annotations=(u'annot1', u'annot2'))
             if isinstance(obj, list):
-                yield _to_obj(obj, IonType.SEXP)
-                yield _to_obj(obj, IonType.SEXP, annotations=(u'annot1', u'annot2'))
+                yield _to_obj(IonType.SEXP)
+                yield _to_obj(IonType.SEXP, annotations=(u'annot1', u'annot2'))
 
 
 def _assert_roundtrip(before, after):
