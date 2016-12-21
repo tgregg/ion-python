@@ -28,7 +28,7 @@ import six
 
 from amazon.ion.reader_text import text_reader
 from amazon.ion.writer_text import text_writer
-from .core import IonEvent, IonEventType, IonType, ION_STREAM_END_EVENT, Timestamp
+from .core import IonEvent, IonEventType, IonType, ION_STREAM_END_EVENT, Timestamp, ION_VERSION_MARKER_EVENT
 from .exceptions import IonException
 from .reader import blocking_reader, NEXT_EVENT
 from .reader_binary import binary_reader
@@ -131,6 +131,7 @@ def dump(obj, fp, imports=None, binary=True, sequence_as_stream=False, skipkeys=
     """
     raw_writer = binary_writer(imports) if binary else text_writer()
     writer = blocking_writer(raw_writer, fp)
+    writer.send(ION_VERSION_MARKER_EVENT)  # The IVM is emitted automatically in binary; it's optional in text.
     if sequence_as_stream and isinstance(obj, (list, tuple)):
         # Treat this top-level sequence as a stream; serialize its elements as top-level values, but don't serialize the
         # sequence itself.
