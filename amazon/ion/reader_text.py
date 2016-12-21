@@ -97,6 +97,7 @@ _HEX_RADIX = _seq(b'Xx')
 _HEX_DIGITS = _DIGITS + _seq(b'abcdefABCDEF')
 _DECIMAL_EXPS = _seq(b'Dd')
 _FLOAT_EXPS = _seq(b'Ee')
+_SIGN = _seq(b'+-')
 _TIMESTAMP_YEAR_DELIMITERS = _seq(b'-T')
 _TIMESTAMP_DELIMITERS = _seq(b'-:+.')
 _TIMESTAMP_OFFSET_INDICATORS = _seq(b'Z+-')
@@ -646,12 +647,12 @@ def _numeric_handler_factory(charset, transition, assertion, illegal_before_unde
 def _exponent_handler_factory(ion_type, exp_chars, parse_func, first_char=None):
     """Generates a handler co-routine which tokenizes an numeric exponent."""
     def transition(prev, c, ctx, trans):
-        if c == _MINUS and prev in exp_chars:
+        if c in _SIGN and prev in exp_chars:
             ctx.value.append(c)
         else:
             _illegal_character(c, ctx)
         return trans
-    illegal = exp_chars + (_MINUS,)
+    illegal = exp_chars + _SIGN
     return _numeric_handler_factory(_DIGITS, transition, lambda c, ctx: c in exp_chars, illegal, parse_func,
                                     illegal_at_end=illegal, ion_type=ion_type, first_char=first_char)
 
@@ -760,6 +761,18 @@ class _TimestampTokens:
         return self._fields[item]
 
 
+_ZEROS = [
+    b'',
+    b'0',
+    b'00',
+    b'000',
+    b'0000',
+    b'00000'
+]
+
+_MICROSECOND_MAGNITUDE = 6
+
+
 def _parse_timestamp(tokens):
     """Parses each token in the given `_TimestampTokens` and marshals the numeric components into a `Timestamp`."""
     def parse():
@@ -819,9 +832,16 @@ def _parse_timestamp(tokens):
         if fraction is None:
             microsecond = 0
         else:
-            fraction = int(fraction)
-            microsecond = fraction * 1000  # 1000 microseconds per millisecond.
-
+            fraction_digits = len(fraction)
+            if fraction_digits > _MICROSECOND_MAGNITUDE:
+                for digit in fraction[_MICROSECOND_MAGNITUDE:]:
+                    if digit != _ZERO:
+                        raise ValueError('Only six significant digits supported in timestamp fractional. Found %s.'
+                                         % (fraction,))
+                fraction = fraction[0:_MICROSECOND_MAGNITUDE]
+            else:
+                fraction.extend(_ZEROS[_MICROSECOND_MAGNITUDE - fraction_digits])
+            microsecond = int(fraction)
         return timestamp(
             year, month, day,
             hour, minute, second, microsecond,
@@ -965,6 +985,16 @@ _SINGLE_QUOTES = [
     b"''"
 ]
 
+
+def _validate_quoted_text(allowed_whitespace, c, ctx, max_char):
+    if c not in allowed_whitespace and not _is_escaped(c) and \
+            (c < _MIN_QUOTED_CHAR or c > max_char):
+        _illegal_character(c, ctx, 'Character out of range [%d, %d] for this type.'
+                           % (_MIN_QUOTED_CHAR, max_char,))
+
+_validate_long_string_text = partial(_validate_quoted_text, _WHITESPACE)
+
+
 @coroutine
 def _long_string_handler(c, ctx, is_field_name=False):
     """Handles triple-quoted strings. Remains active until a value other than a long string is encountered."""
@@ -1003,9 +1033,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
                 quotes = 0
         else:
             if in_data:
-                if c not in _WHITESPACE and (c < _MIN_QUOTED_CHAR or c > max_char):
-                    _illegal_character(c, ctx, 'Character out of range [%d, %d] for this type.'
-                                       % (_MIN_QUOTED_CHAR, max_char,))
+                _validate_long_string_text(c, ctx, max_char)
                 # Any quotes found in the meantime are part of the data
                 val.extend(_SINGLE_QUOTES[quotes])
                 val.append(c)
@@ -1341,8 +1369,10 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
     yield _symbol_token_end(c, ctx, is_field_name, value=val)
 
 
-def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
-                                 before=lambda ctx, is_field_name, is_clob: (ctx, ctx.value, False),
+_validate_short_quoted_text = partial(_validate_quoted_text, _WHITESPACE_NOT_NL)
+
+
+def _quoted_text_handler_factory(delimiter, assertion, before, after, append_first=True,
                                  on_close=lambda ctx: None):
     """Generates handlers for quoted text tokens (either short strings or quoted symbols)."""
     @coroutine
@@ -1351,7 +1381,7 @@ def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
         is_clob = ctx.ion_type is IonType.CLOB
         max_char = _MAX_CLOB_CHAR if is_clob else _MAX_TEXT_CHAR
         ctx = ctx.derive_unicode(quoted_text=True)
-        ctx, val, event_on_close = before(ctx, is_field_name, is_clob)
+        ctx, val, event_on_close = before(c, ctx, is_field_name, is_clob)
         if append_first:
             val.append(c)
         c, self = yield
@@ -1364,10 +1394,8 @@ def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
                     trans = on_close(ctx)
                 else:
                     break
-            elif c not in _WHITESPACE_NOT_NL and (c < _MIN_QUOTED_CHAR or c > max_char):
-                _illegal_character(c, ctx, 'Character out of range [%d, %d] for this type.'
-                                   % (_MIN_QUOTED_CHAR, max_char,))
             else:
+                _validate_short_quoted_text(c, ctx, max_char)
                 val.append(c)
             c, _ = yield trans
         yield after(c, ctx, is_field_name)
@@ -1376,7 +1404,7 @@ def _quoted_text_handler_factory(delimiter, assertion, after, append_first=True,
 
 def _short_string_handler_factory():
     """Generates the short string (double quoted) handler."""
-    def before(ctx, is_field_name, is_clob):
+    def before(c, ctx, is_field_name, is_clob):
         assert not (is_clob and is_field_name)
         is_string = not is_clob and not is_field_name
         if is_string:
@@ -1399,16 +1427,28 @@ def _short_string_handler_factory():
             trans_cls=_SelfDelimitingTransition
         )
 
-    return _quoted_text_handler_factory(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, after, append_first=False,
-                                        before=before, on_close=on_close)
+    return _quoted_text_handler_factory(_DOUBLE_QUOTE, lambda c: c == _DOUBLE_QUOTE, before, after, append_first=False,
+                                        on_close=on_close)
 
 
 _short_string_handler = _short_string_handler_factory()
-_quoted_symbol_handler = _quoted_text_handler_factory(
-    _SINGLE_QUOTE,
-    lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)),
-    partial(_symbol_token_end, trans_cls=_SelfDelimitingTransition)
-)
+
+
+def _quoted_symbol_handler_factory():
+    """Generates the quoted symbol (single quoted) handler."""
+    def before(c, ctx, is_field_name, is_clob):
+        assert not is_clob
+        _validate_short_quoted_text(c, ctx, _MAX_TEXT_CHAR)
+        return ctx, ctx.value, False
+
+    return _quoted_text_handler_factory(
+        _SINGLE_QUOTE,
+        lambda c: (c != _SINGLE_QUOTE or _is_escaped(c)),
+        before,
+        partial(_symbol_token_end, trans_cls=_SelfDelimitingTransition)
+    )
+
+_quoted_symbol_handler = _quoted_symbol_handler_factory()
 
 
 def _single_quote_handler_factory(on_single_quote, on_other):
@@ -1447,13 +1487,13 @@ def _struct_or_lob_handler(c, ctx):
     yield ctx.immediate_transition(_STRUCT_OR_LOB_TABLE[c](c, ctx))
 
 
-_to_bytes = six.binary_type if six.PY2 else partial(six.binary_type, encoding=_ENCODING)
-
-
 def _parse_lob(ion_type, value):
     def parse():
         if ion_type is IonType.CLOB:
-            return _to_bytes(value.as_text())
+            byte_value = bytearray()
+            for b in value.as_text():
+                byte_value.append(ord(b))
+            return six.binary_type(byte_value)
         return base64.b64decode(value)
     return parse
 
@@ -1470,13 +1510,13 @@ def _lob_start_handler(c, ctx):
             if quotes > 0:
                 _illegal_character(c, ctx)
         elif c == _DOUBLE_QUOTE:
-            ctx = ctx.derive_ion_type(IonType.CLOB)
             if quotes > 0:
                 _illegal_character(c, ctx)
+            ctx = ctx.derive_ion_type(IonType.CLOB).derive_unicode(quoted_text=True)
             yield ctx.immediate_transition(_short_string_handler(c, ctx))
         elif c == _SINGLE_QUOTE:
             if not quotes:
-                ctx = ctx.derive_ion_type(IonType.CLOB)
+                ctx = ctx.derive_ion_type(IonType.CLOB).derive_unicode(quoted_text=True)
             quotes += 1
             if quotes == 3:
                 yield ctx.immediate_transition(_long_string_handler(c, ctx))
@@ -1943,6 +1983,7 @@ def _next_code_point_handler(whence, ctx, out):
     """Retrieves the next code point from within a quoted string or symbol."""
     data_event, self = yield
     queue = ctx.queue
+    unicode_escapes_allowed = ctx.ion_type is not IonType.CLOB
     while True:
         if len(queue) == 0:
             yield ctx.read_data_event(self)
@@ -1963,9 +2004,9 @@ def _next_code_point_handler(whence, ctx, out):
                 if six.indexbytes(escape_sequence, -1) == _BACKSLASH:
                     if code_point == _o(b'x'):
                         num_digits = 4  # 2-digit hex escapes
-                    elif code_point == _o(b'u'):
+                    elif code_point == _o(b'u') and unicode_escapes_allowed:
                         num_digits = 6  # 4-digit unicode escapes
-                    elif code_point == _o(b'U'):
+                    elif code_point == _o(b'U') and unicode_escapes_allowed:
                         num_digits = 10  # 8-digit unicode escapes
                     elif code_point in _COMMON_ESCAPES:
                         if code_point == _SLASH or code_point == _QUESTION_MARK:

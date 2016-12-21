@@ -86,12 +86,19 @@ _BAD_GRAMMAR = (
     (b'%',),
     (b'n%',),
     (b'"\n"',),
-    (b'"\\r"',),
+    (b'"\a"',),
+    (b'"\\\a"',),
+    (b'"a\b"',),
     (b'"\\\n\r"',),
     (b'"\0"',),
-    (b'"\\a"',),
+    (b"'\n'",),
+    (b"'\a'",),
+    (b"'\\\a'",),
+    (b"'a\b'",),
+    (b"'\\\n\r'",),
+    (b"'\0'",),
     (b"'''\b'''",),
-    (b"'''\\b'''",),
+    (b"'''a\b'''",),
     (b'abc://',),
     (b'abc/**/://',),
     (b'{{/**/}}',),
@@ -102,6 +109,11 @@ _BAD_GRAMMAR = (
     (b'{{"\xf6"}}',),
     (b'{{"\n"}}',),
     (b"{{'''\0'''}}",),
+    (b"{{'''\\u0000'''}}",),
+    (b"{{'''\\u3000'''}}",),
+    (b'{{"\\u0000"}}',),
+    (b'{{"\\u3000"}}',),
+    (b'{{"\\U0001f4a9"}}',),
     (b'{{ abcd} }',),
     (b'{ {abcd}}', e_start_struct()),
     (b'{{\'\' \'foo\'\'\'}}',),
@@ -187,7 +199,7 @@ _BAD_VALUE = (
     (b'2000-01-01T24:00Z',),  # Hour is 0..23.
     (b'2000-01-01T00:60Z',),  # Minute is 0..59.
     (b'2000-01-01T00:00:60Z',),  # Second is 0..59.
-    (b'2000-01-01T00:00:00.9999Z',),  # Only up to millisecond-level precision is supported.
+    (b'2000-01-01T00:00:00.9999999Z',),  # Only up to microsecond-level precision is supported.
     (b'2000-01-01T00:00:00.000+24:00',),  # Hour offset is 0..23.
     (b'2000-01-01T00:00:00.000+00:60',),  # Minute offset is 0..59.
 )
@@ -299,6 +311,7 @@ _GOOD_FLUSH = (
     [(e_read(b'123'), INC), (NEXT, e_int(123)), _NEXT_END],
     [(e_read(b'123.'), INC), (NEXT, e_decimal(_d(123))), _NEXT_END],
     [(e_read(b'1.23e-4'), INC), (NEXT, e_float(1.23e-4)), _NEXT_END],
+    [(e_read(b'1.23d+4'), INC), (NEXT, e_decimal(_d(1.23e4))), _NEXT_END],
     [(e_read(b'2000-01-01'), INC), (NEXT, e_timestamp(_ts(2000, 1, 1, precision=_tp.DAY))), _NEXT_END],
     [(e_read(b"a"), INC), (NEXT, e_symbol(_st(u'a'))), _NEXT_END],
     [(e_read(b"'abc'"), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END],
@@ -330,6 +343,7 @@ _BAD_FLUSH = (
     [(e_read(b'123_'), INC), _NEXT_ERROR],
     [(e_read(b'123e'), INC), _NEXT_ERROR],
     [(e_read(b'123e-'), INC), _NEXT_ERROR],
+    [(e_read(b'123d+'), INC), _NEXT_ERROR],
     [(e_read(b'0x'), INC), _NEXT_ERROR],
     [(e_read(b'2000-01-'), INC), _NEXT_ERROR],
     [(e_read(b'"'), INC), _NEXT_ERROR],
@@ -475,10 +489,21 @@ _BAD_UNICODE = (
     (u'{\'\'\'\xf6\'\'\' \'\'\'\U0001f4a9r\'\'\'a:"foo"}', e_start_struct()),
     (u'b\xf6\U0001f4a9r::"foo"',),
     (u"'''\a'''",),
+    (u"{{'''\xf6'''}}",),
+    (u'{{"\u3000"}}',),
 )
 
 _GOOD_ESCAPES_FROM_UNICODE = (
     (u'"\\xf6"', e_string(u'\xf6')),
+    (u'"\\a"', e_string(u'\a')),
+    (u'"a\\b"', e_string(u'a\b')),
+    (u'"\\r"', e_string(u'\r')),
+    (u"'\\xf6'42 ", e_symbol(_st(u'\xf6')), e_int(42)),
+    (u"'\\a'42 ", e_symbol(_st(u'\a')), e_int(42)),
+    (u"'a\\b'42 ", e_symbol(_st(u'a\b')), e_int(42)),
+    (u"'\\r'42 ", e_symbol(_st(u'\r')), e_int(42)),
+    (u"'''\\b'''42 ", e_string(u'\b'), e_int(42)),
+    (u"'''a\\b'''42 ", e_string(u'a\b'), e_int(42)),
     (u'"\\u3000"', e_string(u'\u3000')),
     (u'["\\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
     (u'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(_st(u'\'')), e_string(u'\v')),
@@ -496,11 +521,25 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u'"\\\r\\xf6"', e_string(u'\xf6')),
     (u'"\\\rabc"', e_string(u'abc')),
     (u"'\\\r\n'::42 ", e_int(42, annotations=(_st(u''),))),
-    (u"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u'foo\r')))
+    (u"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u'foo\r'))),
+    (u"{{'''\\x00''''''\\x7e'''}}", e_clob(b'\0~')),
+    (u"{{'''\\xff'''}}", e_clob(b'\xff')),
+    (u'{{"\\t"}}', e_clob(b'\t')),
+    (u'{{"\\\n"}}', e_clob(b'')),
+    (u"{{'''\\\r\n'''}}", e_clob(b'')),
 )
 
 _GOOD_ESCAPES_FROM_BYTES = (
     (br'"\xf6"', e_string(u'\xf6')),
+    (br'"\a"', e_string(u'\a')),
+    (br'"a\b"', e_string(u'a\b')),
+    (br'"\r"', e_string(u'\r')),
+    (br"'\xf6'42 ", e_symbol(_st(u'\xf6')), e_int(42)),
+    (br"'\a'42 ", e_symbol(_st(u'\a')), e_int(42)),
+    (br"'a\b'42 ", e_symbol(_st(u'a\b')), e_int(42)),
+    (br"'\r'42 ", e_symbol(_st(u'\r')), e_int(42)),
+    (br"'''\b'''42 ", e_string(u'\b'), e_int(42)),
+    (br"'''a\b'''42 ", e_string(u'a\b'), e_int(42)),
     (br'"\u3000"', e_string(u'\u3000')),
     (br'["\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
     (b'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(_st(u'\'')), e_string(u'\v')),
@@ -518,7 +557,12 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (b'"\\\r\\xf6"', e_string(u'\xf6')),
     (b'"\\\rabc"', e_string(u'abc')),
     (b"'\\\r\n'::42 ", e_int(42, annotations=(_st(u''),))),
-    (b"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u'foo\r')))
+    (b"{'''\\\rfoo\\\n\r''':bar}",) + _good_struct(e_symbol(_st(u'bar'), field_name=_st(u'foo\r'))),
+    (b"{{'''\\x00''''''\\x7e'''}}", e_clob(b'\0~')),
+    (b"{{'''\\xff'''}}", e_clob(b'\xff')),
+    (b'{{"\\t"}}', e_clob(b'\t')),
+    (b'{{"\\\n"}}', e_clob(b'')),
+    (b"{{'''\\\r\n'''}}", e_clob(b'')),
 )
 
 _INCOMPLETE_ESCAPES = (
@@ -675,6 +719,7 @@ _GOOD_SCALARS = (
     (b'null.float', e_float()),
     (b'0.0e1', e_float(0.)),
     (b'-0.0e-1', e_float(-0.)),
+    (b'0.0e+1', e_float(0.)),
     (b'0.0E1', e_float(0.)),
     (b'-inf', e_float(_NEG_INF)),
     (b'+inf', e_float(_POS_INF)),
@@ -689,6 +734,7 @@ _GOOD_SCALARS = (
     (b'1d1', e_decimal(_d(u'1e1'))),
     (b'1D1', e_decimal(_d(u'1e1'))),
     (b'1234d-20', e_decimal(_d(u'1234e-20'))),
+    (b'1234d+20', e_decimal(_d(u'1234e20'))),
     (b'1d0', e_decimal(_d(u'1e0'))),
     (b'1d-1', e_decimal(_d(u'1e-1'))),
     (b'0d-1', e_decimal(_d(u'0e-1'))),
@@ -705,6 +751,8 @@ _GOOD_SCALARS = (
     (b'2007-01-01', e_timestamp(_ts(2007, 1, 1, precision=_tp.DAY))),
     (b'2000-01-01T00:00:00.0Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 0, precision=_tp.SECOND))),
     (b'2000-01-01T00:00:00.000Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 0, precision=_tp.SECOND))),
+    (b'2000-01-01T00:00:00.999999Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 999999, precision=_tp.SECOND))),
+    (b'2000-01-01T00:00:00.99999900000Z', e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 999999, precision=_tp.SECOND))),
     (
         b'2000-01-01T00:00:00.000-00:00',
         e_timestamp(_ts(2000, 1, 1, 0, 0, 0, 0, precision=_tp.SECOND))
