@@ -21,12 +21,11 @@ from decimal import Decimal
 from itertools import chain
 
 import six
-import sys
 
 from amazon.ion.core import timestamp, TimestampPrecision
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
-from amazon.ion.reader_text import reader, _POS_INF, _NEG_INF, _NAN
+from amazon.ion.reader_text import reader, _POS_INF, _NEG_INF, _NAN, _UCS2
 from amazon.ion.symbols import SymbolToken
 from amazon.ion.util import coroutine
 from tests import listify, parametrize
@@ -580,8 +579,6 @@ _INCOMPLETE_ESCAPES = (
         (NEXT, e_int(42)), (NEXT, END)
     ],
 )
-
-_UCS2 = sys.maxunicode < 0x10ffff
 
 _UNICODE_SURROGATES = (
     # Note: Surrogates only allowed with UCS2.
