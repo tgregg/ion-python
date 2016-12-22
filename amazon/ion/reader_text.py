@@ -28,7 +28,7 @@ import six
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
     IonEventType, IonThunkEvent, TimestampPrecision, timestamp, ION_VERSION_MARKER_EVENT
 from amazon.ion.exceptions import IonException
-from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr, CodePointArray
+from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr, CodePointArray, CodePoint
 from amazon.ion.symbols import SymbolToken, TEXT_ION_1_0
 from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
 
@@ -234,15 +234,6 @@ _C_TOP_LEVEL = _Container((), (), None, False)
 _C_STRUCT = _Container((_CLOSE_BRACE,), (_COMMA,), IonType.STRUCT, True)
 _C_LIST = _Container((_CLOSE_BRACKET,), (_COMMA,), IonType.LIST, True)
 _C_SEXP = _Container((_CLOSE_PAREN,), (), IonType.SEXP, False)
-
-
-class _CodePoint(int):
-    """Evaluates as the ordinal of a code point, while also containing the unicode character representation and
-    indicating whether the code point was escaped.
-    """
-    def __init__(self, *args, **kwargs):
-        self.char = None
-        self.is_escaped = False
 
 
 def _is_escaped(c):
@@ -2037,7 +2028,7 @@ def _next_code_point_handler(whence, ctx, out):
                 continue
             escape_sequence = escape_sequence.decode('unicode-escape')
             cp_iter = unicode_iter(escape_sequence)
-            out.code_point = _CodePoint(next(cp_iter))
+            out.code_point = CodePoint(next(cp_iter))
             out.code_point.char = escape_sequence
             out.code_point.is_escaped = True
             yield Transition(None, whence)
@@ -2047,7 +2038,7 @@ def _next_code_point_handler(whence, ctx, out):
             if cp_pair is not None:
                 code_point, surrogates = cp_pair
         if len(surrogates) > 1:
-            out.code_point = _CodePoint(code_point)
+            out.code_point = CodePoint(code_point)
             out.code_point.char = u''
             for surrogate in surrogates:
                 out.code_point.char += six.unichr(surrogate)

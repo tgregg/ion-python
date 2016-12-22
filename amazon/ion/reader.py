@@ -31,8 +31,35 @@ from .core import ION_STREAM_END_EVENT
 from .util import coroutine, Enum
 
 
-def safe_unichr(c):
-    return (hasattr(c, 'char') and len(c.char) > 1) and c.char or six.unichr(c)
+class CodePoint(int):
+    """Evaluates as a code point ordinal, while also containing the unicode character representation and
+    indicating whether the code point was escaped.
+    """
+    def __init__(self, *args, **kwargs):
+        self.char = None
+        self.is_escaped = False
+
+
+def _narrow_unichr(code_point):
+    """Retrieves the unicode character representing any given code point, in a way that won't break on narrow builds.
+
+    This is necessary because the built-in unichr function will fail for ordinals above 0xFFFF on narrow builds (UCS2);
+    ordinals above 0xFFFF would require recalculating and combining surrogate pairs. This avoids that by retrieving the
+    unicode character that was initially read.
+
+    Args:
+        code_point (int|CodePoint): An int or a subclass of int that contains the unicode character representing its
+            code point in an attribute named 'char'.
+    """
+    try:
+        if len(code_point.char) > 1:
+            return code_point.char
+    except AttributeError:
+        pass
+    return six.unichr(code_point)
+
+
+safe_unichr = six.unichr if six.PY3 else _narrow_unichr
 
 
 class CodePointArray(collections.MutableSequence):
@@ -91,6 +118,13 @@ class BufferQueue(object):
         self.__offset = 0
         self.__size = 0
         self.__data_cls = CodePointArray if is_unicode else bytearray
+        if is_unicode:
+            self.__chr = safe_unichr
+            self.__element_type = six.text_type
+        else:
+            self.__chr = chr if six.PY2 else lambda x: x
+            self.__element_type = six.binary_type
+        self.__ord = ord if (six.PY3 and is_unicode) else lambda x: x
         self.position = 0
         self.is_unicode = is_unicode
 
@@ -99,15 +133,14 @@ class BufferQueue(object):
         return c is _EOF  # Note reference equality, ensuring that the EOF literal is still illegal as part of the data.
 
     @staticmethod
-    def _incompatible_types(is_unicode, data):
-        raise ValueError('Incompatible input data types. Expected %r, got %r.'
-                         % (six.text_type if is_unicode else six.binary_type, type(data)))
+    def _incompatible_types(element_type, data):
+        raise ValueError('Incompatible input data types. Expected %r, got %r.' % (element_type, type(data)))
 
     def extend(self, data):
         # TODO Determine if there are any other accumulation strategies that make sense.
         # TODO Determine if we should use memoryview to avoid copying.
-        if not (self.is_unicode ^ isinstance(data, six.binary_type)):
-            BufferQueue._incompatible_types(self.is_unicode, data)
+        if not isinstance(data, self.__element_type):
+            BufferQueue._incompatible_types(self.__element_type, data)
         self.__segments.append(data)
         self.__size += len(data)
 
@@ -136,20 +169,19 @@ class BufferQueue(object):
             if segment_off == 0 and segment_read_len == segment_rem:
                 # consume an entire segment
                 if skip:
-                    segment_slice = u'' if self.is_unicode else b''
+                    segment_slice = self.__element_type()
                 else:
                     segment_slice = segment
             else:
                 # Consume a part of the segment.
                 if skip:
-                    segment_slice = u'' if self.is_unicode else b''
+                    segment_slice = self.__element_type()
                 else:
                     segment_slice = segment[segment_off:segment_off + segment_read_len]
                 offset = 0
             segment_off += segment_read_len
             if segment_off == segment_len:
                 segments.popleft()
-
                 self.__offset = 0
             else:
                 self.__offset = segment_off
@@ -163,19 +195,6 @@ class BufferQueue(object):
         else:
             return data
 
-    def cp_to_int(self, segment, offset):
-        b = six.indexbytes(segment, offset)
-        if self.is_unicode and six.PY3:
-            return ord(b)
-        return b
-
-    def int_to_cp(self, b):
-        if self.is_unicode:
-            return safe_unichr(b)
-        if six.PY2:
-            return chr(b)
-        return b
-
     def read_byte(self):
         if self.__size < 1:
             raise IndexError('Buffer queue is empty')
@@ -186,7 +205,7 @@ class BufferQueue(object):
         if BufferQueue.is_eof(segment):
             octet = _EOF
         else:
-            octet = self.cp_to_int(segment, offset)
+            octet = self.__ord(six.indexbytes(segment, offset))
         offset += 1
         if offset == segment_len:
             offset = 0
@@ -197,13 +216,20 @@ class BufferQueue(object):
         return octet
 
     def unread(self, c):
+        """Unread the given character, byte, or code point.
+
+        If this is a unicode buffer and the input is an int or byte, it will be interpreted as an ordinal representing
+        a unicode code point.
+
+        If this is a binary buffer, the input must be a byte or int; a unicode character will raise an error.
+        """
         if self.position < 1:
             raise IndexError('Cannot unread an empty buffer queue.')
         if isinstance(c, six.text_type):
             if not self.is_unicode:
                 BufferQueue._incompatible_types(self.is_unicode, c)
         else:
-            c = self.int_to_cp(c)
+            c = self.__chr(c)
         num_code_units = self.is_unicode and len(c) or 1
         if self.__offset == 0:
             if num_code_units == 1 and six.PY3:
@@ -246,7 +272,6 @@ class BufferQueue(object):
     def __iter__(self):
         while self.__size > 0:
             yield self.read_byte()
-        raise StopIteration()
 
     def __len__(self):
         return self.__size
