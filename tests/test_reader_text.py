@@ -21,14 +21,13 @@ from decimal import Decimal
 from itertools import chain
 
 import six
-import sys
 
 from amazon.ion.core import timestamp, TimestampPrecision
 from amazon.ion.exceptions import IonException
 from amazon.ion.reader import ReadEventType
 from amazon.ion.reader_text import reader, _POS_INF, _NEG_INF, _NAN
 from amazon.ion.symbols import SymbolToken
-from amazon.ion.util import coroutine
+from amazon.ion.util import coroutine, UCS2
 from tests import listify, parametrize
 from tests.event_aliases import *
 from tests.reader_util import ReaderParameter, reader_scaffold, all_top_level_as_one_stream_params, value_iter
@@ -580,8 +579,6 @@ _INCOMPLETE_ESCAPES = (
         (NEXT, e_int(42)), (NEXT, END)
     ],
 )
-
-_UCS2 = sys.maxunicode < 0x10ffff
 
 _UNICODE_SURROGATES = (
     # Note: Surrogates only allowed with UCS2.
@@ -1177,7 +1174,7 @@ _good_unicode_params = partial(_basic_params, _end, 'GOOD - UNICODE', u'')
     _bad_unicode_params(_BAD_ESCAPES_FROM_UNICODE),
     _bad_grammar_params(_BAD_ESCAPES_FROM_BYTES),
     _paired_params(_INCOMPLETE_ESCAPES, 'INCOMPLETE ESCAPES'),
-    _UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
+    UCS2 and _paired_params(_UNICODE_SURROGATES, 'UNICODE SURROGATES') or (),
     _good_params(_UNSPACED_SEXPS),
     _paired_params(_SKIP, 'SKIP'),
     _paired_params(_GOOD_FLUSH, 'GOOD FLUSH'),

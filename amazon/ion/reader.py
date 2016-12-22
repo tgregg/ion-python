@@ -28,38 +28,7 @@ from collections import deque
 from amazon.ion.symbols import SymbolToken
 from .core import DataEvent, IonEventType, Transition
 from .core import ION_STREAM_END_EVENT
-from .util import coroutine, Enum
-
-
-class CodePoint(int):
-    """Evaluates as a code point ordinal, while also containing the unicode character representation and
-    indicating whether the code point was escaped.
-    """
-    def __init__(self, *args, **kwargs):
-        self.char = None
-        self.is_escaped = False
-
-
-def _narrow_unichr(code_point):
-    """Retrieves the unicode character representing any given code point, in a way that won't break on narrow builds.
-
-    This is necessary because the built-in unichr function will fail for ordinals above 0xFFFF on narrow builds (UCS2);
-    ordinals above 0xFFFF would require recalculating and combining surrogate pairs. This avoids that by retrieving the
-    unicode character that was initially read.
-
-    Args:
-        code_point (int|CodePoint): An int or a subclass of int that contains the unicode character representing its
-            code point in an attribute named 'char'.
-    """
-    try:
-        if len(code_point.char) > 1:
-            return code_point.char
-    except AttributeError:
-        pass
-    return six.unichr(code_point)
-
-
-safe_unichr = six.unichr if six.PY3 else _narrow_unichr
+from .util import coroutine, Enum, safe_unichr
 
 
 class CodePointArray(collections.MutableSequence):

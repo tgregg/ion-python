@@ -22,15 +22,14 @@ from decimal import Decimal
 from collections import defaultdict
 from functools import partial
 
-import collections
 import six
 
 from amazon.ion.core import Transition, ION_STREAM_INCOMPLETE_EVENT, ION_STREAM_END_EVENT, IonType, IonEvent, \
     IonEventType, IonThunkEvent, TimestampPrecision, timestamp, ION_VERSION_MARKER_EVENT
 from amazon.ion.exceptions import IonException
-from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, safe_unichr, CodePointArray, CodePoint
+from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, CodePointArray
 from amazon.ion.symbols import SymbolToken, TEXT_ION_1_0
-from amazon.ion.util import record, coroutine, Enum, next_code_point, unicode_iter
+from amazon.ion.util import record, coroutine, Enum, _next_code_point, unicode_iter, CodePoint, UCS2, safe_unichr
 
 _o = six.byte2int
 _c = safe_unichr
@@ -1969,6 +1968,9 @@ def _skip_trampoline(handler):
         data_event, _ = yield Transition(event, self)
 
 
+_next_code_point_iter = partial(_next_code_point, yield_char=UCS2)
+
+
 @coroutine
 def _next_code_point_handler(whence, ctx, out):
     """Retrieves the next code point from within a quoted string or symbol."""
@@ -1979,11 +1981,8 @@ def _next_code_point_handler(whence, ctx, out):
         if len(queue) == 0:
             yield ctx.read_data_event(self)
         queue_iter = iter(queue)
-        code_point_generator = next_code_point(queue, queue_iter, yield_char=True)
-        cp_pair = next(code_point_generator)
-        code_point, surrogates = (None, ())
-        if cp_pair is not None:
-            code_point, surrogates = cp_pair
+        code_point_generator = _next_code_point_iter(queue, queue_iter)
+        code_point = next(code_point_generator)
         if code_point == _BACKSLASH:
             escape_sequence = b'' + six.int2byte(_BACKSLASH)
             num_digits = None
@@ -2034,16 +2033,8 @@ def _next_code_point_handler(whence, ctx, out):
             yield Transition(None, whence)
         while code_point is None:
             yield ctx.read_data_event(self)
-            cp_pair = next(code_point_generator)
-            if cp_pair is not None:
-                code_point, surrogates = cp_pair
-        if len(surrogates) > 1:
-            out.code_point = CodePoint(code_point)
-            out.code_point.char = u''
-            for surrogate in surrogates:
-                out.code_point.char += six.unichr(surrogate)
-        else:
-            out.code_point = code_point
+            code_point = next(code_point_generator)
+        out.code_point = code_point
         yield Transition(None, whence)
 
 
