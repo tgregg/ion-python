@@ -31,8 +31,8 @@ from amazon.ion.reader import BufferQueue, reader_trampoline, ReadEventType, Cod
 from amazon.ion.symbols import SymbolToken, TEXT_ION_1_0
 from amazon.ion.util import record, coroutine, Enum, _next_code_point, unicode_iter, CodePoint, UCS2, safe_unichr
 
-_o = six.byte2int
-_c = safe_unichr
+_ord = six.byte2int
+_chr = safe_unichr
 
 
 def _illegal_character(c, ctx, message=''):
@@ -46,12 +46,12 @@ def _illegal_character(c, ctx, message=''):
     """
     container_type = ctx.container.ion_type is None and 'top-level' or ctx.container.ion_type.name
     value_type = ctx.ion_type is None and 'unknown' or ctx.ion_type.name
-    c = 'EOF' if BufferQueue.is_eof(c) else _c(c)
+    c = 'EOF' if BufferQueue.is_eof(c) else _chr(c)
     raise IonException('Illegal character %s at position %d in %s value contained in %s. %s Pending value: %s'
                        % (c, ctx.queue.position, value_type, container_type, message, ctx.value))
 
 
-def _whitelist(dct, fallback=_illegal_character):
+def _defaultdict(dct, fallback=_illegal_character):
     """Wraps the given dictionary such that the given fallback function will be called when a nonexistent key is
     accessed.
     """
@@ -61,7 +61,7 @@ def _whitelist(dct, fallback=_illegal_character):
     return out
 
 
-def _merge_dicts(*args):
+def _merge_mappings(*args):
     """Merges a sequence of dictionaries and/or tuples into a single dictionary.
 
     If a given argument is a tuple, it must have two elements, the first of which is a sequence of keys and the second
@@ -80,11 +80,14 @@ def _merge_dicts(*args):
 
 
 def _seq(s):
+    """Converts bytes to a sequence of integer code points."""
     return tuple(six.iterbytes(s))
 
 
 _ENCODING = 'utf-8'
 
+# NOTE: the following are stored as sequences of integer code points. This simplifies dealing with inconsistencies
+# between how bytes objects are handled in python 2 and 3, and simplifies logic around comparing multi-byte characters.
 _WHITESPACE_NOT_NL = _seq(b' \t\v\f')
 _WHITESPACE = _WHITESPACE_NOT_NL + _seq(b'\n\r')
 _VALUE_TERMINATORS = _seq(b'{}[](),\"\' \t\n\r/')
@@ -108,48 +111,51 @@ _OPERATORS = _seq(b'!#%&*+-./;<=>?@^`|~')
 _COMMON_ESCAPES = _seq(b'abtnfrv?0\'"/\\')
 _NEWLINES = _seq(b'\r\n')
 
-_UNDERSCORE = _o(b'_')
-_DOT = _o(b'.')
-_COMMA = _o(b',')
-_COLON = _o(b':')
-_SLASH = _o(b'/')
-_ASTERISK = _o(b'*')
-_BACKSLASH = _o(b'\\')
-_CARRIAGE_RETURN = _o(b'\r')
-_NEWLINE = _o(b'\n')
-_DOUBLE_QUOTE = _o(b'"')
-_SINGLE_QUOTE = _o(b'\'')
-_DOLLAR_SIGN = _o(b'$')
-_PLUS = _o(b'+')
-_MINUS = _o(b'-')
+_UNDERSCORE = _ord(b'_')
+_DOT = _ord(b'.')
+_COMMA = _ord(b',')
+_COLON = _ord(b':')
+_SLASH = _ord(b'/')
+_ASTERISK = _ord(b'*')
+_BACKSLASH = _ord(b'\\')
+_CARRIAGE_RETURN = _ord(b'\r')
+_NEWLINE = _ord(b'\n')
+_DOUBLE_QUOTE = _ord(b'"')
+_SINGLE_QUOTE = _ord(b'\'')
+_DOLLAR_SIGN = _ord(b'$')
+_PLUS = _ord(b'+')
+_MINUS = _ord(b'-')
 _HYPHEN = _MINUS
-_T = _o(b'T')
-_Z = _o(b'Z')
-_T_LOWER = _o(b't')
-_N_LOWER = _o(b'n')
-_F_LOWER = _o(b'f')
+_T = _ord(b'T')
+_Z = _ord(b'Z')
+_T_LOWER = _ord(b't')
+_N_LOWER = _ord(b'n')
+_F_LOWER = _ord(b'f')
 _ZERO = _DIGITS[0]
-_OPEN_BRACE = _o(b'{')
-_OPEN_BRACKET = _o(b'[')
-_OPEN_PAREN = _o(b'(')
-_CLOSE_BRACE = _o(b'}')
-_CLOSE_BRACKET = _o(b']')
-_CLOSE_PAREN = _o(b')')
-_BASE64_PAD = _o(b'=')
-_QUESTION_MARK = _o(b'?')
-_UNICODE_ESCAPE_2 = _o(b'x')
-_UNICODE_ESCAPE_4 = _o(b'u')
-_UNICODE_ESCAPE_8 = _o(b'U')
+_OPEN_BRACE = _ord(b'{')
+_OPEN_BRACKET = _ord(b'[')
+_OPEN_PAREN = _ord(b'(')
+_CLOSE_BRACE = _ord(b'}')
+_CLOSE_BRACKET = _ord(b']')
+_CLOSE_PAREN = _ord(b')')
+_BASE64_PAD = _ord(b'=')
+_QUESTION_MARK = _ord(b'?')
+_UNICODE_ESCAPE_2 = _ord(b'x')
+_UNICODE_ESCAPE_4 = _ord(b'u')
+_UNICODE_ESCAPE_8 = _ord(b'U')
 
 _MAX_TEXT_CHAR = 0x10ffff
 _MAX_CLOB_CHAR = 0x7e
 _MIN_QUOTED_CHAR = 0x20
 
-_TRUE_SEQUENCE = _seq(b'rue')
-_FALSE_SEQUENCE = _seq(b'alse')
-_NAN_SEQUENCE = _seq(b'an')
-_INF_SEQUENCE = _seq(b'inf')
-_IVM_SEQUENCE = _seq(TEXT_ION_1_0.encode(_ENCODING))
+# The following suffixes are used for comparison when a token is found that starts with the first letter in
+# the keyword. For example, when a new token starts with 't', the next three characters must match those in
+# _TRUE_SUFFIX, followed by an acceptable termination character, in order for the token to match the 'true' keyword.
+_TRUE_SUFFIX = _seq(b'rue')
+_FALSE_SUFFIX = _seq(b'alse')
+_NAN_SUFFIX = _seq(b'an')
+_INF_SUFFIX = _seq(b'inf')
+_IVM_SUFFIX = _seq(TEXT_ION_1_0.encode(_ENCODING))
 
 _IVM_TOKEN = SymbolToken(TEXT_ION_1_0, sid=None)
 
@@ -163,6 +169,14 @@ def _ends_value(c):
 
 
 class _NullSequence:
+    """Contains the terminal character sequence for the typed null suffix of the given IonType, starting with the first
+    character after the one which disambiguated the type.
+
+    For example, SYMBOL's _NullSequence contains the characters 'mbol' because 'null.s' is ambiguous until 'y' is found,
+    at which point it must end in 'mbol'.
+
+    Instances are used as leaves of the typed null prefix tree below.
+    """
     def __init__(self, ion_type, sequence):
         self.ion_type = ion_type
         self.sequence = sequence
@@ -170,69 +184,79 @@ class _NullSequence:
     def __getitem__(self, item):
         return self.sequence[item]
 
-_NULL_SEQUENCE = _NullSequence(IonType.NULL, _seq(b'ull'))
-_NULL_SYMBOL_SEQUENCE = _NullSequence(IonType.SYMBOL, _seq(b'mbol'))
-_NULL_SEXP_SEQUENCE = _NullSequence(IonType.SEXP, _seq(b'xp'))
-_NULL_STRING_SEQUENCE = _NullSequence(IonType.STRING, _seq(b'ng'))
-_NULL_STRUCT_SEQUENCE = _NullSequence(IonType.STRUCT, _seq(b'ct'))
-_NULL_INT_SEQUENCE = _NullSequence(IonType.INT, _seq(b'nt'))
-_NULL_FLOAT_SEQUENCE = _NullSequence(IonType.FLOAT, _seq(b'loat'))
-_NULL_DECIMAL_SEQUENCE = _NullSequence(IonType.DECIMAL, _seq(b'ecimal'))
-_NULL_CLOB_SEQUENCE = _NullSequence(IonType.CLOB, _seq(b'lob'))
-_NULL_LIST_SEQUENCE = _NullSequence(IonType.LIST, _seq(b'ist'))
-_NULL_BLOB_SEQUENCE = _NullSequence(IonType.BLOB, _seq(b'ob'))
-_NULL_BOOL_SEQUENCE = _NullSequence(IonType.BOOL, _seq(b'ol'))
-_NULL_TIMESTAMP_SEQUENCE = _NullSequence(IonType.TIMESTAMP, _seq(b'imestamp'))
+_NULL_SUFFIX = _NullSequence(IonType.NULL, _seq(b'ull'))
+_NULL_SYMBOL_SUFFIX = _NullSequence(IonType.SYMBOL, _seq(b'mbol'))
+_NULL_SEXP_SUFFIX = _NullSequence(IonType.SEXP, _seq(b'xp'))
+_NULL_STRING_SUFFIX = _NullSequence(IonType.STRING, _seq(b'ng'))
+_NULL_STRUCT_SUFFIX = _NullSequence(IonType.STRUCT, _seq(b'ct'))
+_NULL_INT_SUFFIX = _NullSequence(IonType.INT, _seq(b'nt'))
+_NULL_FLOAT_SUFFIX = _NullSequence(IonType.FLOAT, _seq(b'loat'))
+_NULL_DECIMAL_SUFFIX = _NullSequence(IonType.DECIMAL, _seq(b'ecimal'))
+_NULL_CLOB_SUFFIX = _NullSequence(IonType.CLOB, _seq(b'lob'))
+_NULL_LIST_SUFFIX = _NullSequence(IonType.LIST, _seq(b'ist'))
+_NULL_BLOB_SUFFIX = _NullSequence(IonType.BLOB, _seq(b'ob'))
+_NULL_BOOL_SUFFIX = _NullSequence(IonType.BOOL, _seq(b'ol'))
+_NULL_TIMESTAMP_SUFFIX = _NullSequence(IonType.TIMESTAMP, _seq(b'imestamp'))
+
+
+# The following implements a prefix tree used to determine whether a typed null keyword has been found (see
+# _typed_null_handler). The leaves of the tree (enumerated above) are the terminal character sequences for the 13
+# possible suffixes to 'null.'. Any other suffix to 'null.' is an error. _NULL_STARTS is entered when 'null.' is found.
 
 _NULL_STR_NEXT = {
-    _o(b'i'): _NULL_STRING_SEQUENCE,
-    _o(b'u'): _NULL_STRUCT_SEQUENCE
+    _ord(b'i'): _NULL_STRING_SUFFIX,
+    _ord(b'u'): _NULL_STRUCT_SUFFIX
 }
 
 _NULL_ST_NEXT = {
-    _o(b'r'): _NULL_STR_NEXT
+    _ord(b'r'): _NULL_STR_NEXT
 }
 
 _NULL_S_NEXT = {
-    _o(b'y'): _NULL_SYMBOL_SEQUENCE,
-    _o(b'e'): _NULL_SEXP_SEQUENCE,
-    _o(b't'): _NULL_ST_NEXT
+    _ord(b'y'): _NULL_SYMBOL_SUFFIX,
+    _ord(b'e'): _NULL_SEXP_SUFFIX,
+    _ord(b't'): _NULL_ST_NEXT
 }
 
 _NULL_B_NEXT = {
-    _o(b'l'): _NULL_BLOB_SEQUENCE,
-    _o(b'o'): _NULL_BOOL_SEQUENCE
+    _ord(b'l'): _NULL_BLOB_SUFFIX,
+    _ord(b'o'): _NULL_BOOL_SUFFIX
 }
 
 _NULL_STARTS = {
-    _o(b'n'): _NULL_SEQUENCE,  # null.null
-    _o(b's'): _NULL_S_NEXT,  # null.string, null.symbol, null.struct, null.sexp
-    _o(b'i'): _NULL_INT_SEQUENCE,  # null.int
-    _o(b'f'): _NULL_FLOAT_SEQUENCE,  # null.float
-    _o(b'd'): _NULL_DECIMAL_SEQUENCE,  # null.decimal
-    _o(b'b'): _NULL_B_NEXT,  # null.bool, null.blob
-    _o(b'c'): _NULL_CLOB_SEQUENCE,  # null.clob
-    _o(b'l'): _NULL_LIST_SEQUENCE,  # null.list
-    _o(b't'): _NULL_TIMESTAMP_SEQUENCE,  # null.timestamp
+    _ord(b'n'): _NULL_SUFFIX,  # null.null
+    _ord(b's'): _NULL_S_NEXT,  # null.string, null.symbol, null.struct, null.sexp
+    _ord(b'i'): _NULL_INT_SUFFIX,  # null.int
+    _ord(b'f'): _NULL_FLOAT_SUFFIX,  # null.float
+    _ord(b'd'): _NULL_DECIMAL_SUFFIX,  # null.decimal
+    _ord(b'b'): _NULL_B_NEXT,  # null.bool, null.blob
+    _ord(b'c'): _NULL_CLOB_SUFFIX,  # null.clob
+    _ord(b'l'): _NULL_LIST_SUFFIX,  # null.list
+    _ord(b't'): _NULL_TIMESTAMP_SUFFIX,  # null.timestamp
 }
 
 
-class _Container(record(
+class _ContainerContext(record(
     'end', 'delimiter', 'ion_type', 'is_delimited'
 )):
-    """A description of an Ion container.
+    """A description of an Ion container, including the container's IonType and its textual delimiter and end character,
+    if applicable.
+
+    This is tracked as part of the current token's context, and is useful when certain lexing decisions depend on
+    which container the token is a member of. For example, ending a numeric token with ']' is not legal unless that
+    token is contained in a list.
 
     Args:
-        end (tuple): Singleton containing the container's end character, if any.
-        delimiter (tuple): Singleton containing the container's delimiter character, if any.
+        end (tuple): Tuple containing the container's end character, if any.
+        delimiter (tuple): Tuple containing the container's delimiter character, if any.
         ion_type (Optional[IonType]): The container's IonType, if any.
         is_delimited (bool): True if delimiter is not empty; otherwise, False.
     """
 
-_C_TOP_LEVEL = _Container((), (), None, False)
-_C_STRUCT = _Container((_CLOSE_BRACE,), (_COMMA,), IonType.STRUCT, True)
-_C_LIST = _Container((_CLOSE_BRACKET,), (_COMMA,), IonType.LIST, True)
-_C_SEXP = _Container((_CLOSE_PAREN,), (), IonType.SEXP, False)
+_C_TOP_LEVEL = _ContainerContext((), (), None, False)
+_C_STRUCT = _ContainerContext((_CLOSE_BRACE,), (_COMMA,), IonType.STRUCT, True)
+_C_LIST = _ContainerContext((_CLOSE_BRACKET,), (_COMMA,), IonType.LIST, True)
+_C_SEXP = _ContainerContext((_CLOSE_PAREN,), (), IonType.SEXP, False)
 
 
 def _is_escaped(c):
@@ -263,7 +287,7 @@ class _HandlerContext(record(
     """A context for a handler co-routine.
 
     Args:
-        container (_Container): The description of the container in which this context is contained.
+        container (_ContainerContext): The description of the container in which this context is contained.
         queue (BufferQueue): The data source for the handler.
         field_name (Optional[SymbolToken]): The token representing the field name for the handled
             value.
@@ -616,14 +640,14 @@ def _numeric_handler_factory(charset, transition, assertion, illegal_before_unde
         while True:
             if _ends_value(c):
                 if prev == _UNDERSCORE or prev in illegal_at_end:
-                    _illegal_character(c, ctx, '%s at end of number.' % (_c(prev),))
+                    _illegal_character(c, ctx, '%s at end of number.' % (_chr(prev),))
                 trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, parse_func(ctx.value))
                 if c == _SLASH:
                     trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
             else:
                 if c == _UNDERSCORE:
                     if prev == _UNDERSCORE or prev in illegal_before_underscore:
-                        _illegal_character(c, ctx, 'Underscore after %s.' % (_c(prev),))
+                        _illegal_character(c, ctx, 'Underscore after %s.' % (_chr(prev),))
                 else:
                     if c not in charset:
                         trans = transition(prev, c, ctx, trans)
@@ -652,7 +676,7 @@ def _coefficient_handler_factory(trans_table, parse_func, assertion=lambda c, ct
     """Generates a handler co-routine which tokenizes a numeric coefficient."""
     def transition(prev, c, ctx, trans):
         if prev == _UNDERSCORE:
-            _illegal_character(c, ctx, 'Underscore before %s.' % (_c(c),))
+            _illegal_character(c, ctx, 'Underscore before %s.' % (_chr(c),))
         return ctx.immediate_transition(trans_table[c](c, ctx))
     return _numeric_handler_factory(_DIGITS, transition, assertion, (_DOT,), parse_func,
                                     ion_type=ion_type, append_first_if_not=append_first_if_not)
@@ -669,12 +693,12 @@ def _radix_int_handler_factory(radix_indicators, charset, parse_func):
                                     assertion, radix_indicators, parse_func, illegal_at_end=radix_indicators)
 
 
-_decimal_handler = _exponent_handler_factory(IonType.DECIMAL, _DECIMAL_EXPS, _parse_decimal, first_char=_o(b'e'))
+_decimal_handler = _exponent_handler_factory(IonType.DECIMAL, _DECIMAL_EXPS, _parse_decimal, first_char=_ord(b'e'))
 _float_handler = _exponent_handler_factory(IonType.FLOAT, _FLOAT_EXPS, _parse_float)
 
 
-_FRACTIONAL_NUMBER_TABLE = _whitelist(
-    _merge_dicts(
+_FRACTIONAL_NUMBER_TABLE = _defaultdict(
+    _merge_mappings(
         (_DECIMAL_EXPS, _decimal_handler),
         (_FLOAT_EXPS, _float_handler)
     )
@@ -683,8 +707,8 @@ _FRACTIONAL_NUMBER_TABLE = _whitelist(
 fractional_number_handler = _coefficient_handler_factory(
     _FRACTIONAL_NUMBER_TABLE, _parse_decimal, assertion=lambda c, ctx: c == _DOT, ion_type=IonType.DECIMAL)
 
-_WHOLE_NUMBER_TABLE = _whitelist(
-    _merge_dicts(
+_WHOLE_NUMBER_TABLE = _defaultdict(
+    _merge_mappings(
         {
             _DOT: fractional_number_handler,
         },
@@ -864,7 +888,7 @@ def _timestamp_handler(c, ctx):
     while True:
         is_eof = can_terminate and BufferQueue.is_eof(c)
         if c not in nxt and not is_eof:
-            _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_c(x) for x in nxt], state))
+            _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_chr(x) for x in nxt], state))
         if c in _VALUE_TERMINATORS or is_eof:
             trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_timestamp(tokens))
             if c == _SLASH:
@@ -913,7 +937,7 @@ def _timestamp_handler(c, ctx):
                         raise ValueError('Unknown timestamp state %r.' % (state,))
                 else:
                     # Reaching this branch would be indicative of a programming error within this state machine.
-                    raise ValueError('Digit following %s in timestamp state %r.' % (_c(prev), state))
+                    raise ValueError('Digit following %s in timestamp state %r.' % (_chr(prev), state))
                 val.append(c)
         prev = c
         c, _ = yield trans
@@ -933,7 +957,7 @@ def _comment_handler(c, ctx, whence):
             ctx = ctx.derive_line_comment(False)
         block_comment = True
     else:
-        _illegal_character(c, ctx, 'Illegal character sequence "/%s".' % (_c(c),))
+        _illegal_character(c, ctx, 'Illegal character sequence "/%s".' % (_chr(c),))
     done = False
     prev = None
     trans = ctx.immediate_transition(self)
@@ -1038,7 +1062,7 @@ def _long_string_handler(c, ctx, is_field_name=False):
                         # This string value is followed by a quoted symbol.
                         if ctx.container.is_delimited:
                             _illegal_character(c, ctx, 'Delimiter %s not found after value.'
-                                               % (_c(ctx.container.delimiter[0]),))
+                                               % (_chr(ctx.container.delimiter[0]),))
                         trans = ctx.event_transition(IonEvent, IonEventType.SCALAR, ctx.ion_type, ctx.value.as_text())
                         if quotes == 1:
                             if BufferQueue.is_eof(c):
@@ -1161,14 +1185,14 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
                         _illegal_character(c, ctx, "Illegal character in field name.")
                     transition = ctx.immediate_transition(_typed_null_handler(c, ctx))
                 return transition
-            maybe_null, keyword_trans = check_keyword('null', _NULL_SEQUENCE.sequence,
+            maybe_null, keyword_trans = check_keyword('null', _NULL_SUFFIX.sequence,
                                                       IonType.NULL, None, check_null_dot)
         if maybe_nan:
-            maybe_nan, keyword_trans = check_keyword('nan', _NAN_SEQUENCE, IonType.FLOAT, _NAN)
+            maybe_nan, keyword_trans = check_keyword('nan', _NAN_SUFFIX, IonType.FLOAT, _NAN)
         elif maybe_true:
-            maybe_true, keyword_trans = check_keyword('true', _TRUE_SEQUENCE, IonType.BOOL, True)
+            maybe_true, keyword_trans = check_keyword('true', _TRUE_SUFFIX, IonType.BOOL, True)
         elif maybe_false:
-            maybe_false, keyword_trans = check_keyword('false', _FALSE_SEQUENCE, IonType.BOOL, False)
+            maybe_false, keyword_trans = check_keyword('false', _FALSE_SUFFIX, IonType.BOOL, False)
         if maybe_null or maybe_nan or maybe_true or maybe_false:
             if keyword_trans is not None:
                 trans = keyword_trans
@@ -1208,8 +1232,8 @@ def _inf_or_operator_handler_factory(c_start, is_delegate=True):
         trans = ctx.immediate_transition(self)
         while True:
             if maybe_inf:
-                if match_index < len(_INF_SEQUENCE):
-                    maybe_inf = c == _INF_SEQUENCE[match_index]
+                if match_index < len(_INF_SUFFIX):
+                    maybe_inf = c == _INF_SUFFIX[match_index]
                 else:
                     if _ends_value(c) or (ctx.container.ion_type is IonType.SEXP and c in _OPERATORS):
                         yield ctx.event_transition(
@@ -1223,13 +1247,13 @@ def _inf_or_operator_handler_factory(c_start, is_delegate=True):
                 ctx = ctx.derive_unicode()
                 if match_index > 0:
                     next_ctx = ctx.derive_child_context(ctx.whence)
-                    for ch in _INF_SEQUENCE[0:match_index]:
+                    for ch in _INF_SUFFIX[0:match_index]:
                         next_ctx.value.append(ch)
                 break
             c, self = yield trans
         if ctx.container is not _C_SEXP:
             _illegal_character(c, next_ctx is None and ctx or next_ctx,
-                               'Illegal character following %s.' % (_c(c_start),))
+                               'Illegal character following %s.' % (_chr(c_start),))
         if match_index == 0:
             if c in _OPERATORS:
                 yield ctx.immediate_transition(_operator_symbol_handler(c, ctx))
@@ -1335,8 +1359,8 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
                 break
             maybe_identifier = maybe_identifier and c in _DIGITS
             if maybe_ivm:
-                if match_index < len(_IVM_SEQUENCE):
-                    maybe_ivm = c == _IVM_SEQUENCE[match_index]
+                if match_index < len(_IVM_SUFFIX):
+                    maybe_ivm = c == _IVM_SUFFIX[match_index]
                 else:
                     maybe_ivm = False
             if maybe_ivm:
@@ -1344,12 +1368,12 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
             elif not maybe_identifier:
                 yield ctx.immediate_transition(_unquoted_symbol_handler(c, ctx, is_field_name))
             val.append(c)
-        elif match_index < len(_IVM_SEQUENCE):
+        elif match_index < len(_IVM_SUFFIX):
             maybe_ivm = False
         prev = c
         c, _ = yield trans
     if len(val) == 1:
-        assert val[0] == _c(_DOLLAR_SIGN)
+        assert val[0] == _chr(_DOLLAR_SIGN)
     elif maybe_identifier:
         assert not maybe_ivm
         sid = int(val[1:])
@@ -1651,8 +1675,8 @@ def _read_data_handler(whence, ctx, complete, can_flush):
         trans = Transition(complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT, self)
 
 
-_ZERO_START_TABLE = _whitelist(
-    _merge_dicts(
+_ZERO_START_TABLE = _defaultdict(
+    _merge_mappings(
         _WHOLE_NUMBER_TABLE,
         (_DIGITS, _timestamp_zero_start_handler),
         (_BINARY_RADIX, _binary_int_handler),
@@ -1660,8 +1684,8 @@ _ZERO_START_TABLE = _whitelist(
     )
 )
 
-_NUMBER_OR_TIMESTAMP_TABLE = _whitelist(
-    _merge_dicts(
+_NUMBER_OR_TIMESTAMP_TABLE = _defaultdict(
+    _merge_mappings(
         {
             _UNDERSCORE: _whole_number_handler,
         },
@@ -1670,8 +1694,8 @@ _NUMBER_OR_TIMESTAMP_TABLE = _whitelist(
     )
 )
 
-_NEGATIVE_TABLE = _whitelist(
-    _merge_dicts(
+_NEGATIVE_TABLE = _defaultdict(
+    _merge_mappings(
         {
             _ZERO: _number_zero_start_handler,
         },
@@ -1680,13 +1704,13 @@ _NEGATIVE_TABLE = _whitelist(
     fallback=_negative_inf_or_sexp_hyphen_handler
 )
 
-_STRUCT_OR_LOB_TABLE = _whitelist({
+_STRUCT_OR_LOB_TABLE = _defaultdict({
     _OPEN_BRACE: _lob_start_handler
 }, _struct_handler)
 
 
-_FIELD_NAME_START_TABLE = _whitelist(
-    _merge_dicts(
+_FIELD_NAME_START_TABLE = _defaultdict(
+    _merge_mappings(
         {
             _SINGLE_QUOTE: _single_quoted_field_name_handler,
             _DOUBLE_QUOTE: _double_quoted_field_name_handler,
@@ -1697,8 +1721,8 @@ _FIELD_NAME_START_TABLE = _whitelist(
     fallback=partial(_illegal_character, message='Illegal character in field name.')
 )
 
-_VALUE_START_TABLE = _whitelist(
-    _merge_dicts(
+_VALUE_START_TABLE = _defaultdict(
+    _merge_mappings(
         {
             _MINUS: _number_negative_start_handler,
             _PLUS: _positive_inf_or_sexp_plus_handler,
@@ -1715,8 +1739,8 @@ _VALUE_START_TABLE = _whitelist(
     fallback=_symbol_or_keyword_handler
 )
 
-_IMMEDIATE_FLUSH_TABLE = _whitelist(
-    _merge_dicts(
+_IMMEDIATE_FLUSH_TABLE = _defaultdict(
+    _merge_mappings(
         (_DIGITS, True),
         (_LETTERS, True),
         {_DOLLAR_SIGN: True},
@@ -1778,7 +1802,7 @@ def _container_handler(c, ctx):
                 if not delimiter_required:
                     _illegal_character(c, ctx.derive_child_context(None),
                                        'Encountered delimiter %s without preceding value.'
-                                       % (_c(ctx.container.delimiter[0]),))
+                                       % (_chr(ctx.container.delimiter[0]),))
                 is_field_name = ctx.ion_type is IonType.STRUCT
                 delimiter_required = False
                 c = None
@@ -1801,7 +1825,7 @@ def _container_handler(c, ctx):
             elif delimiter_required:
                 # This is not the delimiter, or whitespace, or the start of a comment. Throw.
                 _illegal_character(c, ctx.derive_child_context(None), 'Delimiter %s not found after value.'
-                                   % (_c(ctx.container.delimiter[0]),))
+                                   % (_chr(ctx.container.delimiter[0]),))
             elif has_pending_symbol():
                 # A character besides whitespace, comments, and delimiters has been found, and there is a pending
                 # symbol. That pending symbol is either an annotation, a field name, or a symbol value.
@@ -1992,11 +2016,11 @@ def _next_code_point_handler(whence, ctx, out):
                     yield ctx.read_data_event(self)
                 code_point = next(queue_iter)
                 if six.indexbytes(escape_sequence, -1) == _BACKSLASH:
-                    if code_point == _o(b'x'):
+                    if code_point == _ord(b'x'):
                         num_digits = 4  # 2-digit hex escapes
-                    elif code_point == _o(b'u') and unicode_escapes_allowed:
+                    elif code_point == _ord(b'u') and unicode_escapes_allowed:
                         num_digits = 6  # 4-digit unicode escapes
-                    elif code_point == _o(b'U') and unicode_escapes_allowed:
+                    elif code_point == _ord(b'U') and unicode_escapes_allowed:
                         num_digits = 10  # 8-digit unicode escapes
                     elif code_point in _COMMON_ESCAPES:
                         if code_point == _SLASH or code_point == _QUESTION_MARK:
@@ -2014,12 +2038,12 @@ def _next_code_point_handler(whence, ctx, out):
                         break
                     else:
                         # This is a backslash followed by an invalid escape character. This is illegal.
-                        _illegal_character(code_point, ctx, 'Invalid escape sequence \\%s.' % (_c(code_point),))
+                        _illegal_character(code_point, ctx, 'Invalid escape sequence \\%s.' % (_chr(code_point),))
                     escape_sequence += six.int2byte(code_point)
                 else:
                     if code_point not in _HEX_DIGITS:
                         _illegal_character(code_point, ctx,
-                                           'Non-hex character %s found in unicode escape.' % (_c(code_point),))
+                                           'Non-hex character %s found in unicode escape.' % (_chr(code_point),))
                     escape_sequence += six.int2byte(code_point)
                     if len(escape_sequence) == num_digits:
                         break
