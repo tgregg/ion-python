@@ -314,9 +314,7 @@ class _HandlerContext(record(
         If ``whence`` is not specified, then ``whence`` is the whence of this context.
         """
         if annotations is None:
-            annotations = self.annotations
-        if annotations is None:
-            annotations = ()
+            annotations = self.annotations or ()
 
         if depth is None:
             depth = self.depth
@@ -1863,7 +1861,8 @@ def _container_handler(c, ctx):
                 else:
                     handler = _VALUE_START_TABLE[c](c, child_context)  # Initialize the new handler
                     can_flush = _IMMEDIATE_FLUSH_TABLE[c]
-            container_start = c == _OPEN_BRACKET or c == _OPEN_PAREN  # Note: '{' not here because that might be a lob
+            container_start = c == _OPEN_BRACKET or \
+                              c == _OPEN_PAREN  # _OPEN_BRACE might start a lob; that is handled elsewhere.
             quoted_start = c == _DOUBLE_QUOTE or c == _SINGLE_QUOTE
             while True:
                 # Loop over all characters in the current token. A token is either a non-symbol value or a pending
