@@ -267,17 +267,26 @@ def _is_escaped(c):
         return False
 
 
-class _CodePointHolder:
-    """Holds a _CodePoint for passing between co-routines."""
-    def __init__(self):
-        self.code_point = None
-
-
 def _as_symbol(value):
     if hasattr(value, 'as_symbol'):
         return value.as_symbol()
     assert isinstance(value, SymbolToken)
     return value
+
+
+class _ValueTransition(Transition):
+    """A Transition that holds a value that can be passed between coroutine contexts.
+
+    This is useful, for example, when generating the next code point. This process involves switching between several
+    coroutine contexts, and the base :class:`Transition` does not provide a way to pass values between these contexts.
+    """
+    def __new__(cls, event, delegate, value=None):
+        return Transition.__new__(cls, event, delegate)
+
+    def __init__(self, event, delegate, value=None):
+        self.value = value
+
+_Transition = _ValueTransition
 
 
 class _HandlerContext(record(
@@ -305,7 +314,7 @@ class _HandlerContext(record(
     """
 
     def event_transition(self, event_cls, event_type,
-                         ion_type=None, value=None, annotations=None, depth=None, whence=None, trans_cls=Transition):
+                         ion_type=None, value=None, annotations=None, depth=None, whence=None, trans_cls=_Transition):
         """Returns an ion event event_transition that yields to another co-routine.
 
         If ``annotations`` is not specified, then the ``annotations`` are the annotations of this
@@ -330,7 +339,7 @@ class _HandlerContext(record(
             whence
         ), None
 
-    def immediate_transition(self, delegate, trans_cls=Transition):
+    def immediate_transition(self, delegate, trans_cls=_Transition):
         """Returns an immediate transition to another co-routine."""
         return trans_cls(None, delegate), self
 
@@ -344,15 +353,14 @@ class _HandlerContext(record(
             can_flush (Optional[bool]): True if NEXT may be requested after INCOMPLETE is emitted as a result of this
                 data request.
         """
-        return Transition(None, _read_data_handler(whence, self, complete, can_flush))
+        return _Transition(None, _read_data_handler(whence, self, complete, can_flush))
 
     def next_code_point(self, whence):
         """Creates a co-routine for retrieving data as code points.
 
         This should be used in quoted string contexts.
         """
-        out = _CodePointHolder()
-        return Transition(None, _next_code_point_handler(whence, self, out)), out
+        return _Transition(None, _next_code_point_handler(whence, self))
 
     def derive_unicode(self, quoted_text=False):
         """Derives a context for text values, indicating whether the text is quoted."""
@@ -517,8 +525,15 @@ def _composite_transition(event, ctx, next_handler, next_ctx=None):
     return [event, next_ctx.immediate_transition(next_handler(next_ctx))[0]], next_ctx
 
 
-class _SelfDelimitingTransition(Transition):
-    """Signals that this transition terminates token that is self-delimiting, e.g. short string, container, comment."""
+_SELF_DELIMITING_SENTINEL = b'0'  # Must only be compared through reference equality.
+_SelfDelimitingTransition = partial(_ValueTransition, value=_SELF_DELIMITING_SENTINEL)
+
+
+def _is_self_delimiting(transition):
+    """Returns True if the given :class:`Transition` terminates a token that is self-delimiting, e.g. short string,
+    container, or comment; otherwise, returns False.
+    """
+    return transition.value is _SELF_DELIMITING_SENTINEL
 
 
 def _decode(value):
@@ -1284,7 +1299,7 @@ def _operator_symbol_handler(c, ctx):
     yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, val.as_symbol())
 
 
-def _symbol_token_end(c, ctx, is_field_name, trans_cls=Transition, value=None):
+def _symbol_token_end(c, ctx, is_field_name, trans_cls=_Transition, value=None):
     """Returns a transition which ends the current symbol token."""
     if value is None:
         value = ctx.value
@@ -1664,13 +1679,13 @@ def _read_data_handler(whence, ctx, complete, can_flush):
                 data_len = len(data)
                 if data_len > 0:
                     queue.extend(data)
-                    yield Transition(None, whence)
+                    yield _Transition(None, whence)
             elif data_event.type is ReadEventType.NEXT:
                 queue.mark_eof()
                 if not can_flush:
                     _illegal_character(queue.read_byte(), ctx, "Unexpected EOF.")
-                yield Transition(None, whence)
-        trans = Transition(complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT, self)
+                yield _Transition(None, whence)
+        trans = _Transition(complete and ION_STREAM_END_EVENT or ION_STREAM_INCOMPLETE_EVENT, self)
 
 
 _ZERO_START_TABLE = _defaultdict(
@@ -1791,7 +1806,7 @@ def _container_handler(c, ctx):
                                        'Dangling field name (%s) and/or annotation(s) (%r) at end of container.'
                                        % (child_context.field_name, child_context.annotations))
                 # Yield the close event and go to enclosing container. This coroutine instance will never resume.
-                yield Transition(
+                yield _Transition(
                     IonEvent(IonEventType.CONTAINER_END, ctx.ion_type, depth=ctx.depth-1),
                     ctx.whence
                 )
@@ -1873,10 +1888,8 @@ def _container_handler(c, ctx):
                 else:
                     if child_context.quoted_text or quoted_start:
                         quoted_start = False
-                        cp_trans, c = child_context.next_code_point(self)
-                        if cp_trans is not None:
-                            yield cp_trans
-                            c = c.code_point
+                        cp_trans = yield child_context.next_code_point(self)
+                        c = cp_trans.value
                     else:
                         if len(queue) == 0:
                             yield ctx.read_data_event(self, can_flush=can_flush)
@@ -1915,12 +1928,12 @@ def _container_handler(c, ctx):
                         trans.event.event_type is not IonEventType.SCALAR
                     if is_container:
                         assert next_transition is None
-                        yield Transition(
+                        yield _Transition(
                             None,
                             _container_handler(c, ctx.derive_container_context(trans.event.ion_type, self))
                         )
                     complete = ctx.depth == 0
-                    if is_container or isinstance(trans, _SelfDelimitingTransition):
+                    if is_container or _is_self_delimiting(trans):
                         # The end of the value has been reached, and c needs to be updated
                         assert not ctx.quoted_text
                         if len(queue) == 0:
@@ -1935,16 +1948,15 @@ def _container_handler(c, ctx):
                     assert next_transition is None
                     child_context = child_context.derive_ion_type(None)  # The next token will determine the type.
                     complete = False
-                    self_delimiting = isinstance(trans, _SelfDelimitingTransition)
                     if is_field_name:
                         assert not can_flush
-                        if c == _COLON or not self_delimiting:
+                        if c == _COLON or not _is_self_delimiting(trans):
                             break
                     elif has_pending_symbol():
                         can_flush = ctx.depth == 0
-                        if not self_delimiting or child_context.line_comment:
+                        if not _is_self_delimiting(trans) or child_context.line_comment:
                             break
-                    elif self_delimiting:
+                    elif _is_self_delimiting(trans):
                         # This is the end of a comment. If this is at the top level and is un-annotated,
                         # it may end the stream.
                         complete = ctx.depth == 0 and not is_value_decorated()
@@ -1970,32 +1982,33 @@ def _skip_trampoline(handler):
     delegate = handler
     event = None
     depth = 0
+    value = None
     while True:
         def pass_through():
-            _trans = delegate.send(Transition(data_event, delegate))
-            return _trans, _trans.delegate, _trans.event
+            _trans = delegate.send(_Transition(data_event, delegate, value))
+            return _trans, _trans.delegate, _trans.event, _trans.value
 
         if data_event is not None and data_event.type is ReadEventType.SKIP:
             while True:
-                trans, delegate, event = pass_through()
+                trans, delegate, event, value = pass_through()
                 if event is not None:
                     if event.event_type is IonEventType.CONTAINER_END and event.depth <= depth:
                         break
                 if event is None or event.event_type is IonEventType.INCOMPLETE:
-                    data_event, _ = yield Transition(event, self)
+                    data_event, _ = yield _Transition(event, self)
         else:
-            trans, delegate, event = pass_through()
+            trans, delegate, event, value = pass_through()
             if event is not None and (event.event_type is IonEventType.CONTAINER_START or
                                       event.event_type is IonEventType.CONTAINER_END):
                 depth = event.depth
-        data_event, _ = yield Transition(event, self)
+        data_event, _ = yield _Transition(event, self)
 
 
 _next_code_point_iter = partial(_next_code_point, yield_char=UCS2)
 
 
 @coroutine
-def _next_code_point_handler(whence, ctx, out):
+def _next_code_point_handler(whence, ctx):
     """Retrieves the next code point from within a quoted string or symbol."""
     data_event, self = yield
     queue = ctx.queue
@@ -2050,15 +2063,14 @@ def _next_code_point_handler(whence, ctx, out):
                 continue
             escape_sequence = escape_sequence.decode('unicode-escape')
             cp_iter = unicode_iter(escape_sequence)
-            out.code_point = CodePoint(next(cp_iter))
-            out.code_point.char = escape_sequence
-            out.code_point.is_escaped = True
-            yield Transition(None, whence)
+            code_point = CodePoint(next(cp_iter))
+            code_point.char = escape_sequence
+            code_point.is_escaped = True
+            yield _Transition(None, whence, code_point)
         while code_point is None:
             yield ctx.read_data_event(self)
             code_point = next(code_point_generator)
-        out.code_point = code_point
-        yield Transition(None, whence)
+        yield _Transition(None, whence, code_point)
 
 
 def reader(queue=None, is_unicode=False):
