@@ -325,23 +325,11 @@ class _HandlerContext():
         self.quoted_text = quoted_text
         self.line_comment = line_comment
 
-    def event_transition(self, event_cls, event_type,
-                         ion_type=None, value=None, annotations=None, depth=None, whence=None, trans_cls=_Transition):
-        """Returns an ion event event_transition that yields to another co-routine.
-
-        If ``annotations`` is not specified, then the ``annotations`` are the annotations of this
-        context.
-        If ``depth`` is not specified, then the ``depth`` is depth of this context.
-        If ``whence`` is not specified, then ``whence`` is the whence of this context.
-        """
-        if annotations is None:
-            annotations = self.annotations or ()
-
-        if depth is None:
-            depth = self.depth
-
-        if whence is None:
-            whence = self.whence
+    def event_transition(self, event_cls, event_type, ion_type, value, trans_cls=_Transition):
+        """Returns an ion event event_transition that yields to another co-routine."""
+        annotations = self.annotations or ()
+        depth = self.depth
+        whence = self.whence
 
         if ion_type is IonType.SYMBOL and value is _IVM_TOKEN and not annotations and depth == 0:
             return trans_cls(ION_VERSION_MARKER_EVENT, whence)
@@ -392,7 +380,7 @@ class _HandlerContext():
         self.line_comment = False
         return self
 
-    def derive_container_context(self, ion_type, whence, add_depth=1):
+    def derive_container_context(self, ion_type, whence):
         """Derives a container context as a child of the current context."""
         if ion_type is IonType.STRUCT:
             container = _C_STRUCT
@@ -407,7 +395,7 @@ class _HandlerContext():
             queue=self.queue,
             field_name=self.field_name,
             annotations=self.annotations,
-            depth=self.depth + add_depth,
+            depth=self.depth + 1,
             whence=whence,
             value=None,  # containers don't have a value
             ion_type=ion_type,
@@ -1624,7 +1612,7 @@ def _container_start_handler_factory(ion_type, before_yield=lambda c, ctx: None)
     def container_start_handler(c, ctx):
         before_yield(c, ctx)
         yield
-        yield ctx.event_transition(IonEvent, IonEventType.CONTAINER_START, ion_type)
+        yield ctx.event_transition(IonEvent, IonEventType.CONTAINER_START, ion_type, value=None)
     return container_start_handler
 
 
@@ -1979,13 +1967,13 @@ def _skip_trampoline(handler):
                     if event.event_type is IonEventType.CONTAINER_END and event.depth <= depth:
                         break
                 if event is None or event.event_type is IonEventType.INCOMPLETE:
-                    data_event, _ = yield _Transition(event, self)
+                    data_event, _ = yield Transition(event, self)
         else:
             trans, delegate, event, value = pass_through()
             if event is not None and (event.event_type is IonEventType.CONTAINER_START or
                                       event.event_type is IonEventType.CONTAINER_END):
                 depth = event.depth
-        data_event, _ = yield _Transition(event, self)
+        data_event, _ = yield Transition(event, self)
 
 
 _next_code_point_iter = partial(_next_code_point, yield_char=UCS2)
