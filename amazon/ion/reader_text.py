@@ -670,6 +670,10 @@ def _exponent_handler_factory(ion_type, exp_chars, parse_func, first_char=None):
                                     illegal_at_end=illegal, ion_type=ion_type, first_char=first_char)
 
 
+_decimal_handler = _exponent_handler_factory(IonType.DECIMAL, _DECIMAL_EXPS, _parse_decimal, first_char=_ord(b'e'))
+_float_handler = _exponent_handler_factory(IonType.FLOAT, _FLOAT_EXPS, _parse_float)
+
+
 def _coefficient_handler_factory(trans_table, parse_func, assertion=lambda c, ctx: True,
                                  ion_type=None, append_first_if_not=None):
     """Generates a handler co-routine which tokenizes a numeric coefficient."""
@@ -679,21 +683,6 @@ def _coefficient_handler_factory(trans_table, parse_func, assertion=lambda c, ct
         return ctx.immediate_transition(trans_table[c](c, ctx))
     return _numeric_handler_factory(_DIGITS, transition, assertion, (_DOT,), parse_func,
                                     ion_type=ion_type, append_first_if_not=append_first_if_not)
-
-
-def _radix_int_handler_factory(radix_indicators, charset, parse_func):
-    """Generates a handler co-routine which tokenizes a integer of a particular radix."""
-    def assertion(c, ctx):
-        return c in radix_indicators and \
-               ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
-                (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
-               ctx.ion_type == IonType.INT
-    return _numeric_handler_factory(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
-                                    assertion, radix_indicators, parse_func, illegal_at_end=radix_indicators)
-
-
-_decimal_handler = _exponent_handler_factory(IonType.DECIMAL, _DECIMAL_EXPS, _parse_decimal, first_char=_ord(b'e'))
-_float_handler = _exponent_handler_factory(IonType.FLOAT, _FLOAT_EXPS, _parse_float)
 
 
 _FRACTIONAL_NUMBER_TABLE = _defaultdict(
@@ -717,6 +706,19 @@ _WHOLE_NUMBER_TABLE = _defaultdict(
 
 _whole_number_handler = _coefficient_handler_factory(_WHOLE_NUMBER_TABLE, _parse_decimal_int,
                                                      append_first_if_not=_UNDERSCORE)
+
+
+def _radix_int_handler_factory(radix_indicators, charset, parse_func):
+    """Generates a handler co-routine which tokenizes a integer of a particular radix."""
+    def assertion(c, ctx):
+        return c in radix_indicators and \
+               ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
+                (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
+               ctx.ion_type == IonType.INT
+    return _numeric_handler_factory(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
+                                    assertion, radix_indicators, parse_func, illegal_at_end=radix_indicators)
+
+
 _binary_int_handler = _radix_int_handler_factory(_BINARY_RADIX, _BINARY_DIGITS, _parse_binary_int)
 _hex_int_handler = _radix_int_handler_factory(_HEX_RADIX, _HEX_DIGITS, _parse_hex_int)
 
