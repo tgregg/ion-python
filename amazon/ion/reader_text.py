@@ -296,10 +296,13 @@ class _HandlerContext():
         code_point (Optional[int|CodePoint]): The token's current unicode code point, if applicable.
         is_self_delimiting (Optional[bool]): True if this context's token is self-delimiting (a short string, container,
             or comment).
+        is_composite (Optional[bool]): True if this context's token is a value immediately followed by another token
+            discovered during lookahead.
     """
 
     def __init__(self, container, queue, field_name, annotations, depth, whence, value, ion_type, pending_symbol,
-                 quoted_text=False, line_comment=False, code_point=None, is_self_delimiting=False):
+                 quoted_text=False, line_comment=False, code_point=None, is_self_delimiting=False,
+                 is_composite=False):
         self.container = container
         self.queue = queue
         self.field_name = field_name
@@ -313,6 +316,7 @@ class _HandlerContext():
         self.line_comment = line_comment
         self.code_point = code_point
         self.is_self_delimiting = is_self_delimiting
+        self.is_composite = is_composite
 
     def event_transition(self, event_cls, event_type, ion_type, value):
         """Returns an ion event event_transition that yields to another co-routine."""
@@ -380,10 +384,7 @@ class _HandlerContext():
         return self
 
     def set_code_point(self, code_point):
-        """Sets the context's current ``code_point`` to the given ``int`` or :class:`CodePoint`. Only applicable when
-        ``quoted_text`` is true.
-        """
-        #assert self.quoted_text
+        """Sets the context's current ``code_point`` to the given ``int`` or :class:`CodePoint`."""
         self.code_point = code_point
         return self
 
@@ -484,31 +485,39 @@ class _HandlerContext():
         self.line_comment = False
         return self
 
-
-def _composite_transition(event_transition, ctx, next_handler, next_ctx=None):
-    """Creates a new :class:`_CompositeTransition`.
-
-    Args:
-        event_transition (Transition): A transition with a non-None IonEvent.
-        ctx (_HandlerContext): The context for the value contained in ``event_transition``.
-        next_handler (Coroutine): The handler that will lex the next token.
-        next_ctx (Optional[_HandlerContext]): The context for the next token. If None, a new child context
-            will be derived from ``ctx``.
-    """
-    if next_ctx is None:
-        next_ctx = ctx.derive_child_context(ctx.whence)
-    return _CompositeTransition(event_transition, next_ctx.immediate_transition(next_handler(next_ctx)), next_ctx)
+    def set_composite(self, is_composite):
+        self.is_composite = is_composite
+        return self
 
 
 class _CompositeTransition(Transition):
     """Composes an event transition followed by an immediate transition to the handler for the next token.
 
     This is useful when some lookahead is required to determine if a token has ended, e.g. in the case of long strings.
-    """
-    def __new__(cls, transition, next_transition, next_context):
-        return Transition.__new__(cls, transition.event, transition.delegate)
 
-    def __init__(self, transition, next_transition, next_context):
+    Args:
+        event_transition (Transition): A transition with a non-None IonEvent.
+        current_context (_HandlerContext): The context for the value contained in ``event_transition``.
+        next_handler (Coroutine): The handler that will lex the next token. Only None if ``next_context`` contains a
+            complete token (as is the case with an empty quoted symbol following a long string).
+        next_context (Optional[_HandlerContext]): The context for the next token. If None, a new child context
+            will be derived from ``ctx``.
+        initialize_handler (Optional[bool]): True if the ``next_handler`` coroutine needs to be initialized;
+            otherwise, False.
+    """
+    def __new__(cls, event_transition, *args, **kwargs):
+        return Transition.__new__(cls, event_transition.event, event_transition.delegate)
+
+    def __init__(self, event_transition, current_context, next_handler, next_context=None, initialize_handler=True):
+        assert event_transition.event is not None
+        if next_context is None:
+            next_context = current_context.derive_child_context(current_context.whence)
+        next_transition = None
+        if next_handler is not None:
+            if initialize_handler:
+                next_handler = next_handler(next_context)
+            next_transition = next_context.immediate_transition(next_handler)
+        current_context.set_composite(True)
         self.next_transition = next_transition
         self.next_context = next_context
 
@@ -609,7 +618,7 @@ def _number_slash_end_handler(c, ctx, event):
     comment = _comment_handler(_SLASH, next_ctx, next_ctx.whence)
     comment.send((c, comment))
     # If the previous line returns without error, it's a valid comment and the number may be emitted.
-    yield _CompositeTransition(event, next_ctx.immediate_transition(comment), next_ctx)
+    yield _CompositeTransition(event, ctx, comment, next_ctx, initialize_handler=False)
 
 
 def _numeric_handler_factory(charset, transition, assertion, illegal_before_underscore, parse_func,
@@ -979,7 +988,7 @@ def _sexp_slash_handler(c, ctx, whence=None, pending_event=None):
         if pending_event is not None:
             # Since this is the start of a new value and not a comment, the pending event must be emitted.
             assert pending_event.event is not None
-            yield _composite_transition(pending_event, ctx, partial(_operator_symbol_handler, _SLASH))
+            yield _CompositeTransition(pending_event, ctx, partial(_operator_symbol_handler, _SLASH))
         yield ctx.immediate_transition(_operator_symbol_handler(_SLASH, ctx))
 
 
@@ -1053,13 +1062,13 @@ def _long_string_handler(c, ctx, is_field_name=False):
                             ctx.queue.unread(c)
                             ctx.set_quoted_text(True)
                             c, _ = yield ctx.immediate_transition(self)
-                            trans = _composite_transition(
+                            trans = _CompositeTransition(
                                 trans,
                                 ctx,
                                 partial(_quoted_symbol_handler, c, is_field_name=False),
                             )
                         else:  # quotes == 2
-                            trans = _CompositeTransition(trans, None, ctx.set_empty_symbol())
+                            trans = _CompositeTransition(trans, ctx, None, ctx.set_empty_symbol())
                 elif c not in _WHITESPACE:
                     if is_clob:
                         trans = ctx.immediate_transition(_clob_end_handler(c, ctx))
@@ -1242,7 +1251,7 @@ def _inf_or_operator_handler_factory(c_start, is_delegate=True):
             if c in _OPERATORS:
                 yield ctx.immediate_transition(_operator_symbol_handler(c, ctx))
             yield ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value.as_symbol())
-        yield _composite_transition(
+        yield _CompositeTransition(
             ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value.as_symbol()),
             ctx,
             partial(_unquoted_symbol_handler, c),
@@ -1296,7 +1305,7 @@ def _unquoted_symbol_handler(c, ctx, is_field_name=False):
             c_next, _ = yield
             ctx.queue.unread(c_next)
             assert ctx.value
-            yield _composite_transition(
+            yield _CompositeTransition(
                 ctx.event_transition(IonEvent, IonEventType.SCALAR, IonType.SYMBOL, ctx.value.as_symbol()),
                 ctx,
                 partial(_operator_symbol_handler, c)
@@ -1881,17 +1890,16 @@ def _container_handler(c, ctx):
                 trans = handler.send((c, handler))
                 if trans.event is not None:
                     is_self_delimiting = False
-                    try:
+                    if child_context.is_composite:
+                        # This is a composite transition, i.e. it is an event transition followed by an immediate
+                        # transition to the handler coroutine for the next token.
                         next_transition = trans.next_transition
                         child_context = trans.next_context
-                    except AttributeError:
+                        assert next_transition is None or next_transition.event is None
+                    else:
                         next_transition = None
                         is_self_delimiting = child_context.is_self_delimiting
                         child_context = None
-                    else:
-                        # This is a composite transition, i.e. it is an event transition followed by an immediate
-                        # transition to the handler coroutine for the next token.
-                        assert next_transition is None or next_transition.event is None
                     # This child value is finished. c is now the first character in the next value or sequence.
                     # Hence, a new character should not be read; it should be provided to the handler for the next
                     # child context.
@@ -1964,14 +1972,14 @@ def _skip_trampoline(handler):
 
         if data_event is not None and data_event.type is ReadEventType.SKIP:
             while True:
-                trans, delegate, event= pass_through()
+                trans, delegate, event = pass_through()
                 if event is not None:
                     if event.event_type is IonEventType.CONTAINER_END and event.depth <= depth:
                         break
                 if event is None or event.event_type is IonEventType.INCOMPLETE:
                     data_event, _ = yield Transition(event, self)
         else:
-            trans, delegate, event= pass_through()
+            trans, delegate, event = pass_through()
             if event is not None and (event.event_type is IonEventType.CONTAINER_START or
                                       event.event_type is IonEventType.CONTAINER_END):
                 depth = event.depth
