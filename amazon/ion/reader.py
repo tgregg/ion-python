@@ -19,8 +19,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import collections
-
 import six
 
 from collections import deque
@@ -31,7 +29,7 @@ from .core import ION_STREAM_END_EVENT
 from .util import coroutine, Enum, safe_unichr
 
 
-class CodePointArray(collections.MutableSequence):
+class CodePointArray:
     """A mutable sequence of code points. Used in place of bytearray() for text values."""
     def __init__(self, initial_bytes=None):
         self.__text = u''
