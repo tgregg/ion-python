@@ -319,6 +319,7 @@ _GOOD_FLUSH = (
     [(e_read(b"$10"), INC), (NEXT, e_symbol(_sid(10))), _NEXT_END, (e_read(b'0'), INC), (NEXT, e_int(0)), _NEXT_END],
     [(e_read(b'abc'), INC), (NEXT, e_symbol(_st(u'abc'))), _NEXT_END, (e_read(b'def'), INC),
      (NEXT, e_symbol(_st(u'def'))), _NEXT_END],
+    [(e_read(b"''"), INC), (NEXT, e_symbol(_st(u''))), _NEXT_END],
     [(e_read(b"'''abc'''"), INC), (NEXT, e_string(u'abc')), (NEXT, END), (e_read(b"'''def'''"), INC),
      (NEXT, e_string(u'def')), _NEXT_END],
     [(e_read(b"'''abc''''def'"), e_string(u'abc')), _NEXT_INC, (NEXT, e_symbol(_st(u'def'))), _NEXT_END],
