@@ -782,6 +782,7 @@ _GOOD_SCALARS = (
     (b'nul', e_symbol(_st(u'nul'))),  # See the logic in the event generators that forces these to emit an event.
     (b'$foo', e_symbol(_st(u'$foo'))),
     (b'$10', e_symbol(_sid(10))),
+    (b'$10n', e_symbol(_st(u'$10n'))),
     (b'$2', e_symbol(_sid(2))),  # Note: NOT an IVM event
     (b"'$ion_1_0'", e_symbol(_st(u'$ion_1_0'))),  # Note: NOT an IVM event
     (b'$', e_symbol(_st(u'$'))),

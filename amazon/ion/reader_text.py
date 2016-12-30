@@ -268,9 +268,10 @@ def _is_escaped(c):
 
 
 def _as_symbol(value):
-    if hasattr(value, 'as_symbol'):
+    try:
         return value.as_symbol()
-    assert isinstance(value, SymbolToken)
+    except AttributeError:
+        assert isinstance(value, SymbolToken)
     return value
 
 
@@ -1344,13 +1345,13 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
     c, self = yield
     trans = ctx.immediate_transition(self)
     maybe_ivm = ctx.depth == 0 and not is_field_name
-    maybe_identifier = True
+    maybe_symbol_identifier = True
     match_index = 1
     while True:
         if c not in _WHITESPACE:
             if prev in _WHITESPACE or _ends_value(c) or c == _COLON or (in_sexp and c in _OPERATORS):
                 break
-            maybe_identifier = maybe_identifier and c in _DIGITS
+            maybe_symbol_identifier = maybe_symbol_identifier and c in _DIGITS
             if maybe_ivm:
                 if match_index < len(_IVM_SUFFIX):
                     maybe_ivm = c == _IVM_SUFFIX[match_index]
@@ -1358,7 +1359,7 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
                     maybe_ivm = False
             if maybe_ivm:
                 match_index += 1
-            elif not maybe_identifier:
+            elif not maybe_symbol_identifier:
                 yield ctx.immediate_transition(_unquoted_symbol_handler(c, ctx, is_field_name))
             val.append(c)
         elif match_index < len(_IVM_SUFFIX):
@@ -1367,7 +1368,7 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
         c, _ = yield trans
     if len(val) == 1:
         assert val[0] == _chr(_DOLLAR_SIGN)
-    elif maybe_identifier:
+    elif maybe_symbol_identifier:
         assert not maybe_ivm
         sid = int(val[1:])
         val = SymbolToken(None, sid)
