@@ -1382,14 +1382,32 @@ _validate_short_quoted_text = partial(_validate_quoted_text, _WHITESPACE_NOT_NL)
 
 def _quoted_text_handler_factory(delimiter, assertion, before, after, append_first=True,
                                  on_close=lambda ctx: None):
-    """Generates handlers for quoted text tokens (either short strings or quoted symbols)."""
+    """Generates handlers for quoted text tokens (either short strings or quoted symbols).
+
+    Args:
+        delimiter (int): Ordinal of the quoted text's delimiter.
+        assertion (callable): Accepts the first character's ordinal, returning True if that character is a legal
+            beginning to the token.
+        before (callable): Called upon initialization. Accepts the first character's ordinal, the current context, True
+            if the token is a field name, and True if the token is a clob; returns the token's current value and True
+            if ``on_close`` should be called upon termination of the token.
+        after (callable): Called after termination of the token. Accepts the final character's ordinal, the current
+            context, and True if the token is a field name; returns a Transition.
+        append_first (Optional[bool]): True if the first character the coroutine receives is part of the text data, and
+            should therefore be appended to the value; otherwise, False (in which case, the first character must be
+            the delimiter).
+        on_close (Optional[callable]): Called upon termination of the token (before ``after``), if ``before`` indicated
+            that ``on_close`` should be called. Accepts the current context and returns a Transition. This is useful
+            for yielding a different kind of Transition based on initialization parameters given to ``before`` (e.g.
+            string vs. clob).
+    """
     @coroutine
     def quoted_text_handler(c, ctx, is_field_name=False):
         assert assertion(c)
         is_clob = ctx.ion_type is IonType.CLOB
         max_char = _MAX_CLOB_CHAR if is_clob else _MAX_TEXT_CHAR
         ctx.set_unicode(quoted_text=True)
-        ctx, val, event_on_close = before(c, ctx, is_field_name, is_clob)
+        val, event_on_close = before(c, ctx, is_field_name, is_clob)
         if append_first:
             val.append(c)
         c, self = yield
@@ -1422,7 +1440,7 @@ def _short_string_handler_factory():
             assert not val
             ctx.set_pending_symbol()
             val = ctx.pending_symbol
-        return ctx, val, is_string
+        return val, is_string
 
     def on_close(ctx):
         ctx.set_self_delimiting(True)
@@ -1446,7 +1464,7 @@ def _quoted_symbol_handler_factory():
     def before(c, ctx, is_field_name, is_clob):
         assert not is_clob
         _validate_short_quoted_text(c, ctx, _MAX_TEXT_CHAR)
-        return ctx, ctx.value, False
+        return ctx.value, False
 
     return _quoted_text_handler_factory(
         _SINGLE_QUOTE,
