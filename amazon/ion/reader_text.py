@@ -624,7 +624,28 @@ def _number_slash_end_handler(c, ctx, event):
 
 def _numeric_handler_factory(charset, transition, assertion, illegal_before_underscore, parse_func,
                              illegal_at_end=(None,), ion_type=None, append_first_if_not=None, first_char=None):
-    """Generates a handler co-routine which tokenizes a numeric component."""
+    """Generates a handler co-routine which tokenizes a numeric component (a token or sub-token).
+
+    Args:
+        charset (sequence): Set of ordinals of legal characters for this numeric component.
+        transition (callable): Called upon termination of this component (i.e. when a character not in ``charset`` is
+            found). Accepts the previous character ordinal, the current character ordinal, the current context, and the
+            previous transition. Returns a Transition if the component ends legally; otherwise, raises an error.
+        assertion (callable): Accepts the first character's ordinal and the current context. Returns True if this is
+            a legal start to the component.
+        illegal_before_underscore (sequence): Set of ordinals of illegal characters to precede an underscore for this
+            component.
+        parse_func (callable): Called upon ending the numeric value. Accepts the current token value and returns a
+            thunk that lazily parses the token.
+        illegal_at_end (Optional[sequence]): Set of ordinals of characters that may not legally end the value.
+        ion_type (Optional[IonType]): The type of the value if it were to end on this component.
+        append_first_if_not (Optional[int]): The ordinal of a character that should not be appended to the token if
+            it occurs first in this component (e.g. an underscore in many cases).
+        first_char (Optional[int]): The ordinal of the character that should be appended instead of the character that
+            occurs first in this component. This is useful for preparing the token for parsing in the case where a
+            particular character is peculiar to the Ion format (e.g. 'd' to denote the exponent of a decimal value
+            should be replaced with 'e' for compatibility with python's Decimal type).
+    """
     @coroutine
     def numeric_handler(c, ctx):
         assert assertion(c, ctx)
@@ -659,7 +680,18 @@ def _numeric_handler_factory(charset, transition, assertion, illegal_before_unde
 
 
 def _exponent_handler_factory(ion_type, exp_chars, parse_func, first_char=None):
-    """Generates a handler co-routine which tokenizes an numeric exponent."""
+    """Generates a handler co-routine which tokenizes an numeric exponent.
+
+    Args:
+        ion_type (IonType): The type of the value with this exponent.
+        exp_chars (sequence): The set of ordinals of the legal exponent characters for this component.
+        parse_func (callable): Called upon ending the numeric value. Accepts the current token value and returns a
+            thunk that lazily parses the token.
+        first_char (Optional[int]): The ordinal of the character that should be appended instead of the character that
+            occurs first in this component. This is useful for preparing the token for parsing in the case where a
+            particular character is peculiar to the Ion format (e.g. 'd' to denote the exponent of a decimal value
+            should be replaced with 'e' for compatibility with python's Decimal type).
+    """
     def transition(prev, c, ctx, trans):
         if c in _SIGN and prev in exp_chars:
             ctx.value.append(c)
@@ -677,7 +709,19 @@ _float_handler = _exponent_handler_factory(IonType.FLOAT, _FLOAT_EXPS, _parse_fl
 
 def _coefficient_handler_factory(trans_table, parse_func, assertion=lambda c, ctx: True,
                                  ion_type=None, append_first_if_not=None):
-    """Generates a handler co-routine which tokenizes a numeric coefficient."""
+    """Generates a handler co-routine which tokenizes a numeric coefficient.
+
+    Args:
+        trans_table (dict): lookup table for the handler for the next component of this numeric token, given the
+            ordinal of the first character in that component.
+        parse_func (callable): Called upon ending the numeric value. Accepts the current token value and returns a
+            thunk that lazily parses the token.
+        assertion (callable): Accepts the first character's ordinal and the current context. Returns True if this is
+            a legal start to the component.
+        ion_type (Optional[IonType]): The type of the value if it were to end on this coefficient.
+        append_first_if_not (Optional[int]): The ordinal of a character that should not be appended to the token if
+            it occurs first in this component (e.g. an underscore in many cases).
+    """
     def transition(prev, c, ctx, trans):
         if prev == _UNDERSCORE:
             _illegal_character(c, ctx, 'Underscore before %s.' % (_chr(c),))
@@ -710,7 +754,14 @@ _whole_number_handler = _coefficient_handler_factory(_WHOLE_NUMBER_TABLE, _parse
 
 
 def _radix_int_handler_factory(radix_indicators, charset, parse_func):
-    """Generates a handler co-routine which tokenizes a integer of a particular radix."""
+    """Generates a handler co-routine which tokenizes a integer of a particular radix.
+
+    Args:
+        radix_indicators (sequence): The set of ordinals of characters that indicate the radix of this int.
+        charset (sequence): Set of ordinals of legal characters for this radix.
+        parse_func (callable): Called upon ending the numeric value. Accepts the current token value and returns a
+            thunk that lazily parses the token.
+    """
     def assertion(c, ctx):
         return c in radix_indicators and \
                ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
@@ -1208,7 +1259,14 @@ def _symbol_or_keyword_handler(c, ctx, is_field_name=False):
 
 
 def _inf_or_operator_handler_factory(c_start, is_delegate=True):
-    """Generates handler co-routines for values that may be `+inf` or `-inf`."""
+    """Generates handler co-routines for values that may be `+inf` or `-inf`.
+
+    Args:
+        c_start (int): The ordinal of the character that starts this token (either `+` or `-`).
+        is_delegate (bool): True if a different handler began processing this token; otherwise, False. This will only
+            be true for `-inf`, because it is not the only value that can start with `-`; `+inf` is the only value
+            (outside of a s-expression) that can start with `+`.
+    """
     @coroutine
     def inf_or_operator_handler(c, ctx):
         next_ctx = None
@@ -1477,7 +1535,14 @@ _quoted_symbol_handler = _quoted_symbol_handler_factory()
 
 
 def _single_quote_handler_factory(on_single_quote, on_other):
-    """Generates handlers used for classifying tokens that begin with one or more single quotes."""
+    """Generates handlers used for classifying tokens that begin with one or more single quotes.
+
+    Args:
+        on_single_quote (callable): Called when another single quote is found. Accepts the current character's ordinal,
+            the current context, and True if the token is a field name; returns a Transition.
+        on_other (callable): Called when any character other than a single quote is found.  Accepts the current
+            character's ordinal, the current context, and True if the token is a field name; returns a Transition.
+    """
     @coroutine
     def single_quote_handler(c, ctx, is_field_name=False):
         assert c == _SINGLE_QUOTE
@@ -1551,7 +1616,20 @@ def _lob_start_handler(c, ctx):
 
 
 def _lob_end_handler_factory(ion_type, action, validate=lambda c, ctx, action_res: None):
-    """Generates handlers for the end of blob or clob values."""
+    """Generates handlers for the end of blob or clob values.
+
+    Args:
+        ion_type (IonType): The type of this lob (either blob or clob).
+        action (callable): Called for each non-whitespace, non-closing brace character encountered before the end of
+            the lob. Accepts the current character's ordinal, the current context, the previous character's ordinal,
+            the result of the previous call to ``action`` (if any), and True if this is the first call to ``action``.
+            Returns any state that will be needed by subsequent calls to ``action``. For blobs, this should validate
+            the character is valid base64; for clobs, this should ensure there are no illegal characters (e.g. comments)
+            between the end of the data and the end of the clob.
+        validate (Optional[callable]): Called once the second closing brace has been found. Accepts the current
+            character's ordinal, the current context, and the result of the last call to ``action``; raises an error
+            if this is not a valid lob value.
+    """
     assert ion_type is IonType.BLOB or ion_type is IonType.CLOB
 
     @coroutine
@@ -1636,7 +1714,13 @@ _symbol_identifier_or_unquoted_field_name_handler = partial(_symbol_identifier_o
 
 
 def _container_start_handler_factory(ion_type, before_yield=lambda c, ctx: None):
-    """Generates handlers for tokens that begin with container start characters."""
+    """Generates handlers for tokens that begin with container start characters.
+
+    Args:
+        ion_type (IonType): The type of this container.
+        before_yield (Optional[callable]): Called at initialization. Accepts the first character's ordinal and the
+            current context; performs any necessary initialization actions.
+    """
     assert ion_type.is_container
 
     @coroutine
