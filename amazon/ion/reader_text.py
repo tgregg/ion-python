@@ -767,7 +767,7 @@ def _radix_int_handler_factory(radix_indicators, charset, parse_func):
                ((len(ctx.value) == 1 and ctx.value[0] == _ZERO) or
                 (len(ctx.value) == 2 and ctx.value[0] == _MINUS and ctx.value[1] == _ZERO)) and \
                ctx.ion_type == IonType.INT
-    return _numeric_handler_factory(charset, lambda prev, c, ctx: _illegal_character(c, ctx),
+    return _numeric_handler_factory(charset, lambda prev, c, ctx, trans: _illegal_character(c, ctx),
                                     assertion, radix_indicators, parse_func, illegal_at_end=radix_indicators)
 
 
