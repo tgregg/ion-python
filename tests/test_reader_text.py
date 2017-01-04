@@ -936,7 +936,7 @@ _TEST_SYMBOLS = (
         b'foo ',
         b'\'a b\' ',
         b'foo/*bar*/',
-        b'\'a b\' //bar\n',
+        b'\'a b\' //bar\r',
         b'\'\'',
         b'\'\\U0001f4a9\'',
     ),
@@ -1057,9 +1057,9 @@ def _containerize_params(param_generator, with_skip=True, is_delegate=False, top
         for info in ((IonType.LIST, b'[', b']', b','),
                      (IonType.SEXP, b'(', b')', b' '),  # Sexps without delimiters are tested separately
                      (IonType.STRUCT, b'{ ', b'}', b','),  # Space after opening bracket for instant event.
-                     (IonType.LIST, b'[/**/', b'//\n]', b'//\n,'),
+                     (IonType.LIST, b'[/**/', b'//\n]', b'//\r,'),
                      (IonType.SEXP, b'(//\n', b'/**/)', b'/**/'),
-                     (IonType.STRUCT, b'{/**/', b'//\n}', b'/**/,')):
+                     (IonType.STRUCT, b'{/**/', b'//\r}', b'/**/,')):
             ion_type = info[0]
             params = _collect_params(param_generator, (info[3], True))
             for param in params:

@@ -1023,7 +1023,7 @@ def _comment_handler(c, ctx, whence):
                 done = True
             prev = c
         else:
-            if c == _NEWLINE or BufferQueue.is_eof(c):
+            if c in _NEWLINES or BufferQueue.is_eof(c):
                 done = True
     yield ctx.set_self_delimiting(True).immediate_transition(whence)
 
