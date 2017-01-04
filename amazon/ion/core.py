@@ -299,15 +299,15 @@ class Transition(record('event', 'delegate')):
             whence this transition came.
     """
 
-_MIN_OFFSET = timedelta(hours=-12)
-_MAX_OFFSET = timedelta(hours=12)
+_MIN_OFFSET = timedelta(hours=-24)
+_MAX_OFFSET = timedelta(hours=24)
 _ZERO_DELTA = timedelta()
 
 
 class OffsetTZInfo(tzinfo):
     """A trivial UTC offset :class:`tzinfo`."""
     def __init__(self, delta=_ZERO_DELTA):
-        if delta < _MIN_OFFSET or delta > _MAX_OFFSET:
+        if delta <= _MIN_OFFSET or delta >= _MAX_OFFSET:
             raise ValueError('Invalid UTC offset: %s' % delta)
         self.delta = delta
 
