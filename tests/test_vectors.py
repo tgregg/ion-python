@@ -36,6 +36,8 @@ from tests import parametrize
 _VECTORS_ROOT = abspath(join(abspath(__file__), u'..', u'..', u'vectors', u'iontestdata'))
 _GOOD_SUBDIR = (u'good',)
 _BAD_SUBDIR = (u'bad',)
+_TIMESTAMP_SUBDIR = (u'timestamp',)
+_UTF8_SUBDIR = (u'utf8',)
 
 
 def _abspath(*subdirectories):
@@ -76,6 +78,10 @@ _SKIP_LIST = (
     _abspath_good(u'structAnnotatedOrdered.10n'),  # TODO investigate.
     _abspath_good(u'structOrdered.10n'),  # TODO investigate.
     _abspath_bad(u'minLongWithLenTooSmall.10n'),  # TODO this is no longer "bad" because NOP padding is now allowed.
+    _abspath_bad(u'nullBadTD.10n'),  # TODO this is no longer "bad" because NOP padding is now allowed. This should be renamed "NOPPad.10n" and moved to "good".
+    # TODO the following contain inaccurate annot_length subfields, which pass in weird ways. Needs to be fixed.
+    _abspath_bad(u'container_length_mismatch.10n'),
+    _abspath_bad(u'emptyAnnotatedInt.10n'),
 )
 
 
@@ -131,12 +137,18 @@ def _basic(vector_type, *subdirectories):
         yield _P(vector_type, file, _load_thunk(file, vector_type.is_bad))
 
 _good = partial(_basic, _T.GOOD, *_GOOD_SUBDIR)
+_good_timestamp = partial(_basic, _T.GOOD, *(_GOOD_SUBDIR + _TIMESTAMP_SUBDIR))
 _bad = partial(_basic, _T.BAD, *_BAD_SUBDIR)
+_bad_timestamp = partial(_basic, _T.BAD, *(_BAD_SUBDIR + _TIMESTAMP_SUBDIR))
+_bad_utf8 = partial(_basic, _T.BAD, *(_BAD_SUBDIR + _UTF8_SUBDIR))
 
 
 @parametrize(*chain(
     _good(),
+    _good_timestamp(),
     _bad(),
+    _bad_timestamp(),
+    _bad_utf8(),
 ))
 def test_all(p):
     p.test_thunk()
