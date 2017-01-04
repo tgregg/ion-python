@@ -943,6 +943,8 @@ def _timestamp_handler(c, ctx):
         if c not in nxt and not is_eof:
             _illegal_character(c, ctx, 'Expected %r in state %r.' % ([_chr(x) for x in nxt], state))
         if c in _VALUE_TERMINATORS or is_eof:
+            if not can_terminate:
+                _illegal_character(c, ctx, 'Unexpected termination of timestamp.')
             trans = ctx.event_transition(IonThunkEvent, IonEventType.SCALAR, ctx.ion_type, _parse_timestamp(tokens))
             if c == _SLASH:
                 trans = ctx.immediate_transition(_number_slash_end_handler(c, ctx, trans))
