@@ -52,7 +52,6 @@ _abspath_bad = partial(_abspath_file, _BAD_SUBDIR)
 
 _SKIP_LIST = (
     # TEXT:
-    _abspath_good(u'eolCommentCr.ion'),  # TODO this is a really simple bug where \r isn't recognized as the end of a line comment
     _abspath_good(u'subfieldVarUInt.ion'),  # TODO investigate. See also: https://github.com/amznlabs/ion-java/issues/62
     _abspath_good(u'subfieldVarUInt32bit.ion'),  # TODO investigate. See also: https://github.com/amznlabs/ion-java/issues/62
     _abspath_good(u'utf16.ion'),  # TODO see https://github.com/amznlabs/ion-java/issues/61
