@@ -37,7 +37,12 @@ _VECTORS_ROOT = abspath(join(abspath(__file__), u'..', u'..', u'vectors', u'iont
 _GOOD_SUBDIR = (u'good',)
 _BAD_SUBDIR = (u'bad',)
 _TIMESTAMP_SUBDIR = (u'timestamp',)
+_TIMELINE_SUBDIR = (u'equivTimeline',)
 _UTF8_SUBDIR = (u'utf8',)
+_EQUIVS_SUBDIR = (u'equivs',)
+_NONEQUIVS_SUBDIR = (u'non-equivs',)
+
+_embedded_documents = u'embedded_documents'
 
 
 def _abspath(*subdirectories):
@@ -49,6 +54,7 @@ def _abspath_file(subdirectories, f):
 
 _abspath_good = partial(_abspath_file, _GOOD_SUBDIR)
 _abspath_bad = partial(_abspath_file, _BAD_SUBDIR)
+_abspath_equivs = partial(_abspath_file, _GOOD_SUBDIR + _EQUIVS_SUBDIR)
 
 _SKIP_LIST = (
     # TEXT:
@@ -72,6 +78,9 @@ _SKIP_LIST = (
     _abspath_bad(u'invalidVersionMarker_ion_2_0.ion'),
     _abspath_bad(u'invalidVersionMarker_ion_1234_0.ion'),
 
+    _abspath_equivs(u'timestamps.ion'),  # TODO this contains a timestamp fractional with >6 significant digits, not supported in Python.
+    _abspath_equivs(u'structsFieldsRepeatedNames.ion'),  # TODO this contains structs with repeated field names. Simpleion maps these to dicts, whose keys are de-duped.
+
     # BINARY:
     _abspath_good(u'nullInt3.10n'),  # TODO the binary reader needs to support the 0x3F type code (null int (negative))
     _abspath_good(u'structAnnotatedOrdered.10n'),  # TODO investigate.
@@ -81,18 +90,26 @@ _SKIP_LIST = (
     # TODO the following contain inaccurate annot_length subfields, which pass in weird ways. Needs to be fixed.
     _abspath_bad(u'container_length_mismatch.10n'),
     _abspath_bad(u'emptyAnnotatedInt.10n'),
+    # TODO the last element of the following contains a timestamp with a negative fractional. This is illegal per spec.
+    # It should be removed from here and put in its own test under bad/ .
+    _abspath_equivs(u'timestampFractions.10n'),
 )
 
 
 class _VectorType(Enum):
     GOOD = 0
     GOOD_EQUIVS = 2
-    BAD = 3
-    BAD_EQUIVS = 4
+    GOOD_NONEQUIVS = 3
+    BAD = 4
+    BAD_EQUIVS = 5
 
     @property
     def is_bad(self):
         return self >= _VectorType.BAD
+
+    @property
+    def is_equivs(self):
+        return self is _VectorType.GOOD_EQUIVS or self is _VectorType.BAD_EQUIVS
 
 
 class _Parameter:
@@ -135,8 +152,51 @@ def _basic(vector_type, *subdirectories):
     for file in _list_files(*subdirectories):
         yield _P(vector_type, file, _load_thunk(file, vector_type.is_bad))
 
+
+def equivs(ion_sequence):
+    if ion_sequence.ion_annotations and ion_sequence.ion_annotations[0].text == _embedded_documents:
+        pass  # TODO
+    else:
+        previous = ion_sequence[0]
+        for value in ion_sequence:
+            assert previous == value
+            previous = value
+
+
+def nonequivs(ion_sequence):
+    if ion_sequence.ion_annotations and ion_sequence.ion_annotations[0].text == _embedded_documents:
+        pass  # TODO
+    else:
+        for i in range(len(ion_sequence)):
+            for j in range(len(ion_sequence)):
+                if i == j:
+                    continue
+                assert ion_sequence[i] != ion_sequence[j]
+
+
+def _equivs_thunk(file, is_equivs):
+    assertion = equivs if is_equivs else nonequivs
+
+    def good():
+        vector = open(file, 'rb')
+        elements = load(vector, single_value=False)
+        for element in elements:
+            assertion(element)
+
+    return good
+
+
+def _good_comparisons(vector_type, *subdirectories):
+    for file in _list_files(*(_GOOD_SUBDIR + subdirectories)):
+        yield _P(vector_type, file, _equivs_thunk(file, vector_type.is_equivs))
+
+
 _good = partial(_basic, _T.GOOD, *_GOOD_SUBDIR)
 _good_timestamp = partial(_basic, _T.GOOD, *(_GOOD_SUBDIR + _TIMESTAMP_SUBDIR))
+_good_timestamp_equiv_timeline = partial(_good_comparisons, _T.GOOD_EQUIVS, *(_TIMESTAMP_SUBDIR + _TIMELINE_SUBDIR))
+_good_equivs = partial(_good_comparisons, _T.GOOD_EQUIVS, *_EQUIVS_SUBDIR)
+_good_equivs_utf8 = partial(_good_comparisons, _T.GOOD_EQUIVS, *(_EQUIVS_SUBDIR + _UTF8_SUBDIR))
+_good_nonequivs = partial(_good_comparisons, _T.GOOD_NONEQUIVS, *_NONEQUIVS_SUBDIR)
 _bad = partial(_basic, _T.BAD, *_BAD_SUBDIR)
 _bad_timestamp = partial(_basic, _T.BAD, *(_BAD_SUBDIR + _TIMESTAMP_SUBDIR))
 _bad_utf8 = partial(_basic, _T.BAD, *(_BAD_SUBDIR + _UTF8_SUBDIR))
@@ -145,6 +205,10 @@ _bad_utf8 = partial(_basic, _T.BAD, *(_BAD_SUBDIR + _UTF8_SUBDIR))
 @parametrize(*chain(
     _good(),
     _good_timestamp(),
+    _good_timestamp_equiv_timeline(),  # TODO need extra step to check whether they represent the same instant?
+    _good_equivs(),
+    _good_equivs_utf8(),
+    _good_nonequivs(),
     _bad(),
     _bad_timestamp(),
     _bad_utf8(),
