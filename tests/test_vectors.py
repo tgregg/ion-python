@@ -26,6 +26,7 @@ from os.path import isfile, join, abspath
 from pytest import raises
 
 from amazon.ion.exceptions import IonException
+from amazon.ion.equivalence import ion_equals
 from amazon.ion.simpleion import load
 from amazon.ion.util import Enum
 from tests import parametrize
@@ -55,6 +56,9 @@ def _abspath_file(subdirectories, f):
 _abspath_good = partial(_abspath_file, _GOOD_SUBDIR)
 _abspath_bad = partial(_abspath_file, _BAD_SUBDIR)
 _abspath_equivs = partial(_abspath_file, _GOOD_SUBDIR + _EQUIVS_SUBDIR)
+_abspath_equivs_utf8 = partial(_abspath_file, _GOOD_SUBDIR + _EQUIVS_SUBDIR + _UTF8_SUBDIR)
+_abspath_nonequivs = partial(_abspath_file, _GOOD_SUBDIR + _NONEQUIVS_SUBDIR)
+_abspath_equiv_timeline = partial(_abspath_file, _GOOD_SUBDIR + _TIMESTAMP_SUBDIR + _TIMELINE_SUBDIR)
 
 _SKIP_LIST = (
     # TEXT:
@@ -71,15 +75,23 @@ _SKIP_LIST = (
     # errors (as they are in this implementation).
     _abspath_good(u'notVersionMarkers.ion'),
     _abspath_good(u'symbols.ion'),
-    # TODO these are all "future" IVMs. This implementation treats them as regular symbols while the others error.
-    # I think the spec is unclear.
+    _abspath_nonequivs(u'annotations.ion'),
+    # TODO these are all "future" IVMs. This implementation treats them as regular symbols while the others error. Fix.
+    # TODO The spec needs to be clarified that $ion_[DIGIT]_[DIGIT] is illegal.
     _abspath_bad(u'invalidVersionMarker_ion_0_0.ion'),
     _abspath_bad(u'invalidVersionMarker_ion_1_1.ion'),
     _abspath_bad(u'invalidVersionMarker_ion_2_0.ion'),
     _abspath_bad(u'invalidVersionMarker_ion_1234_0.ion'),
+    # TODO The following contains timestamps that aren't equal to each other according to the spec
+    # (different precisions). This should probably be split up and moved. Java handles this by defining a different
+    # equivalence for this file which compares the timestamps after converting them to millis. Why is this needed?
+    _abspath_equiv_timeline(u'timestamps.ion'),
+    # TODO the following contain structs with repeated field names. Simpleion maps these to dicts, whose keys are de-duped.
+    _abspath_equivs(u'structsFieldsRepeatedNames.ion'),
+    _abspath_nonequivs(u'structs.ion'),
 
-    _abspath_equivs(u'timestamps.ion'),  # TODO this contains a timestamp fractional with >6 significant digits, not supported in Python.
-    _abspath_equivs(u'structsFieldsRepeatedNames.ion'),  # TODO this contains structs with repeated field names. Simpleion maps these to dicts, whose keys are de-duped.
+    _abspath_equivs(u'strings.ion'),  # TODO Fix bug which errors on four single quotes followed by escaped newline followed by three single quotes. The escaped newline should create a boundary that makes the fourth quote part of the data.
+    _abspath_equivs_utf8(u'stringUtf8.ion'),  # TODO some error in parsing the file around unpaired unicode surrogates. Investigate.
 
     # BINARY:
     _abspath_good(u'nullInt3.10n'),  # TODO the binary reader needs to support the 0x3F type code (null int (negative))
@@ -93,6 +105,16 @@ _SKIP_LIST = (
     # TODO the last element of the following contains a timestamp with a negative fractional. This is illegal per spec.
     # It should be removed from here and put in its own test under bad/ .
     _abspath_equivs(u'timestampFractions.10n'),
+
+
+    _abspath_equivs_utf8(u'stringU0001D11E.ion'),
+    _abspath_equivs_utf8(u'stringU0120.ion'),
+    _abspath_equivs_utf8(u'stringU2021.ion'),
+
+)
+
+_DEBUG_WHITELIST = (
+    # Place files here to run only their tests.
 )
 
 
@@ -113,11 +135,11 @@ class _VectorType(Enum):
 
 
 class _Parameter:
-    def __init__(self, vector_type, file_path, test_thunk):
+    def __init__(self, vector_type, file_path, test_thunk, desc=''):
         self.vector_type = vector_type
         self.file_path = file_path
         self.test_thunk = test_thunk
-        self.desc = u'%s - %s' % (vector_type.name, file_path)
+        self.desc = '%s - %s %s' % (vector_type.name, file_path, desc)
 
     def __str__(self):
         return self.desc
@@ -130,7 +152,10 @@ def _list_files(*subdirectories):
     directory_path = _abspath(*subdirectories)
     for file in listdir(directory_path):
         file_path = join(directory_path, file)
-        if isfile(file_path) and file_path not in _SKIP_LIST:
+        if _DEBUG_WHITELIST:
+            if file_path in _DEBUG_WHITELIST:
+                yield file_path
+        elif isfile(file_path) and file_path not in _SKIP_LIST:
             yield file_path
 
 
@@ -153,17 +178,30 @@ def _basic(vector_type, *subdirectories):
         yield _P(vector_type, file, _load_thunk(file, vector_type.is_bad))
 
 
-def equivs(ion_sequence):
+def _equivs_thunk(a, b):
+    def assert_equal():
+        assert ion_equals(a, b)
+    return assert_equal
+
+
+def _nonequivs_thunk(a, b):
+    def assert_nonequal():
+        assert not ion_equals(a, b)
+    return assert_nonequal
+
+
+def _equivs_params(file, ion_sequence):
     if ion_sequence.ion_annotations and ion_sequence.ion_annotations[0].text == _embedded_documents:
         pass  # TODO
     else:
         previous = ion_sequence[0]
         for value in ion_sequence:
-            assert previous == value
+            yield _P(_T.GOOD_EQUIVS, file, _equivs_thunk(previous, value),
+                     desc='%r == %r' % (previous, value))
             previous = value
 
 
-def nonequivs(ion_sequence):
+def _nonequivs_params(file, ion_sequence):
     if ion_sequence.ion_annotations and ion_sequence.ion_annotations[0].text == _embedded_documents:
         pass  # TODO
     else:
@@ -171,24 +209,18 @@ def nonequivs(ion_sequence):
             for j in range(len(ion_sequence)):
                 if i == j:
                     continue
-                assert ion_sequence[i] != ion_sequence[j]
-
-
-def _equivs_thunk(file, is_equivs):
-    assertion = equivs if is_equivs else nonequivs
-
-    def good():
-        vector = open(file, 'rb')
-        elements = load(vector, single_value=False)
-        for element in elements:
-            assertion(element)
-
-    return good
+                yield _P(_T.GOOD_NONEQUIVS, file, _nonequivs_thunk(ion_sequence[i], ion_sequence[j]),
+                         desc='%r != %r' % (ion_sequence[i], ion_sequence[j]))
 
 
 def _good_comparisons(vector_type, *subdirectories):
+    params = _equivs_params if vector_type.is_equivs else _nonequivs_params
     for file in _list_files(*(_GOOD_SUBDIR + subdirectories)):
-        yield _P(vector_type, file, _equivs_thunk(file, vector_type.is_equivs))
+        vector = open(file, 'rb')
+        sequences = load(vector, single_value=False)
+        for sequence in sequences:
+            for param in params(file, sequence):
+                yield param
 
 
 _good = partial(_basic, _T.GOOD, *_GOOD_SUBDIR)
@@ -205,7 +237,7 @@ _bad_utf8 = partial(_basic, _T.BAD, *(_BAD_SUBDIR + _UTF8_SUBDIR))
 @parametrize(*chain(
     _good(),
     _good_timestamp(),
-    _good_timestamp_equiv_timeline(),  # TODO need extra step to check whether they represent the same instant?
+    _good_timestamp_equiv_timeline(),
     _good_equivs(),
     _good_equivs_utf8(),
     _good_nonequivs(),
