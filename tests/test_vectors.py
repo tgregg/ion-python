@@ -73,15 +73,9 @@ _SKIP_LIST = (
     _abspath_good(u'localSymbolTableImportNullMaxId.ion'),
     # TODO the following contain symbol identifiers without a corresponding mapping. The spec says these should be
     # errors (as they are in this implementation).
-    _abspath_good(u'notVersionMarkers.ion'),
-    _abspath_good(u'symbols.ion'),
-    _abspath_nonequivs(u'annotations.ion'),
-    # TODO these are all "future" IVMs. This implementation treats them as regular symbols while the others error. Fix.
-    # TODO The spec needs to be clarified that $ion_[DIGIT]_[DIGIT] is illegal.
-    _abspath_bad(u'invalidVersionMarker_ion_0_0.ion'),
-    _abspath_bad(u'invalidVersionMarker_ion_1_1.ion'),
-    _abspath_bad(u'invalidVersionMarker_ion_2_0.ion'),
-    _abspath_bad(u'invalidVersionMarker_ion_1234_0.ion'),
+    # _abspath_good(u'notVersionMarkers.ion'),
+    # _abspath_good(u'symbols.ion'),
+    # _abspath_nonequivs(u'annotations.ion'),
     # TODO The following contains timestamps that aren't equal to each other according to the spec
     # (different precisions). This should probably be split up and moved. Java handles this by defining a different
     # equivalence for this file which compares the timestamps after converting them to millis. Why is this needed?
@@ -92,6 +86,9 @@ _SKIP_LIST = (
 
     _abspath_equivs(u'strings.ion'),  # TODO Fix bug which errors on four single quotes followed by escaped newline followed by three single quotes. The escaped newline should create a boundary that makes the fourth quote part of the data.
     _abspath_equivs_utf8(u'stringUtf8.ion'),  # TODO some error in parsing the file around unpaired unicode surrogates. Investigate.
+    _abspath_equivs_utf8(u'stringU0001D11E.ion'),
+    _abspath_equivs_utf8(u'stringU0120.ion'),
+    _abspath_equivs_utf8(u'stringU2021.ion'),
 
     # BINARY:
     _abspath_good(u'nullInt3.10n'),  # TODO the binary reader needs to support the 0x3F type code (null int (negative))
@@ -105,12 +102,6 @@ _SKIP_LIST = (
     # TODO the last element of the following contains a timestamp with a negative fractional. This is illegal per spec.
     # It should be removed from here and put in its own test under bad/ .
     _abspath_equivs(u'timestampFractions.10n'),
-
-
-    _abspath_equivs_utf8(u'stringU0001D11E.ion'),
-    _abspath_equivs_utf8(u'stringU0120.ion'),
-    _abspath_equivs_utf8(u'stringU2021.ion'),
-
 )
 
 _DEBUG_WHITELIST = (
