@@ -39,16 +39,20 @@ def _illegal_character(c, ctx, message=''):
     """Raises an IonException upon encountering the given illegal character in the given context.
 
     Args:
-        c (int): Ordinal of the illegal character.
+        c (int|None): Ordinal of the illegal character.
         ctx (_HandlerContext):  Context in which the illegal character was encountered.
         message (Optional[str]): Additional information, as necessary.
 
     """
     container_type = ctx.container.ion_type is None and 'top-level' or ctx.container.ion_type.name
     value_type = ctx.ion_type is None and 'unknown' or ctx.ion_type.name
-    c = 'EOF' if BufferQueue.is_eof(c) else _chr(c)
-    raise IonException('Illegal character %s at position %d in %s value contained in %s. %s Pending value: %s'
-                       % (c, ctx.queue.position, value_type, container_type, message, ctx.value))
+    if c is None:
+        header = 'Illegal token'
+    else:
+        c = 'EOF' if BufferQueue.is_eof(c) else _chr(c)
+        header = 'Illegal character %s' % (c,)
+    raise IonException('%s at position %d in %s value contained in %s. %s Pending value: %s'
+                       % (header, ctx.queue.position, value_type, container_type, message, ctx.value))
 
 
 def _defaultdict(dct, fallback=_illegal_character):
@@ -157,26 +161,9 @@ _NAN_SUFFIX = _seq(b'an')
 _INF_SUFFIX = _seq(b'inf')
 _IVM_PREFIX = _seq(b'$ion_')
 
-_ION_1_0_TOKEN = SymbolToken(TEXT_ION_1_0, sid=None)
-_IVM_TOKENS = {
-    TEXT_ION_1_0: _ION_1_0_TOKEN,
-}
 _IVM_EVENTS = {
     TEXT_ION_1_0: ION_VERSION_MARKER_EVENT,
 }
-
-
-def _is_ivm(token):
-    """Tests whether the given :class:`SymbolToken` represents an IVM.
-
-    This tests reference equality with the values of _IVM_TOKEN to enforce the distinction between true IVMs and non-IVM
-    SymbolTokens with text that looks like an IVM.
-    """
-    for ivm_token in six.itervalues(_IVM_TOKENS):
-        if token is ivm_token:
-            return True
-    return False
-
 
 _POS_INF = float('+inf')
 _NEG_INF = float('-inf')
@@ -286,11 +273,25 @@ def _is_escaped(c):
         return False
 
 
-def _as_symbol(value):
+def _as_symbol(value, is_symbol_value=True):
+    """Converts the input to a :class:`SymbolToken` suitable for being emitted as part of a :class:`IonEvent`.
+
+    If the input has an `as_symbol` method (e.g. :class:`CodePointArray`), it will be converted using that method.
+    Otherwise, it must already be a `SymbolToken`. In this case, there is nothing to do unless the input token is not a
+    symbol value and it is an :class:`_IVMToken`. This requires the `_IVMToken` to be converted to a regular
+    `SymbolToken`.
+    """
     try:
         return value.as_symbol()
     except AttributeError:
         assert isinstance(value, SymbolToken)
+    if not is_symbol_value:
+        try:
+            # This converts _IVMTokens to regular SymbolTokens when the _IVMToken cannot represent an IVM (i.e.
+            # it is a field name or annotation).
+            return value.regular_token()
+        except AttributeError:
+            pass
     return value
 
 
@@ -344,8 +345,13 @@ class _HandlerContext():
         depth = self.depth
         whence = self.whence
 
-        if ion_type is IonType.SYMBOL and not annotations and depth == 0 and _is_ivm(value):
-            return Transition(_IVM_EVENTS[value.text], whence)
+        if ion_type is IonType.SYMBOL:
+            if not annotations and depth == 0 and isinstance(value, _IVMToken):
+                event = value.ivm_event()
+                if event is None:
+                    _illegal_character(None, self, 'Illegal IVM: %s.' % (value.text,))
+                return Transition(event, whence)
+            assert not isinstance(value, _IVMToken)
 
         return Transition(
             event_cls(event_type, ion_type, value, self.field_name, annotations, depth),
@@ -473,7 +479,7 @@ class _HandlerContext():
         """Appends the context's ``pending_symbol`` to its ``annotations`` sequence."""
         assert self.pending_symbol is not None
         assert not self.value
-        annotations = (_as_symbol(self.pending_symbol),)  # pending_symbol becomes an annotation
+        annotations = (_as_symbol(self.pending_symbol, is_symbol_value=False),)  # pending_symbol becomes an annotation
         self.annotations = annotations if not self.annotations else self.annotations + annotations
         self.ion_type = None
         self.pending_symbol = None  # reset pending symbol
@@ -486,7 +492,7 @@ class _HandlerContext():
         """Sets the context's ``pending_symbol`` as its ``field_name``."""
         assert self.pending_symbol is not None
         assert not self.value
-        self.field_name = _as_symbol(self.pending_symbol)  # pending_symbol becomes field name
+        self.field_name = _as_symbol(self.pending_symbol, is_symbol_value=False)  # pending_symbol becomes field name
         self.pending_symbol = None  # reset pending symbol
         self.quoted_text = False
         self.line_comment = False
@@ -1415,6 +1421,26 @@ def _unquoted_symbol_handler(c, ctx, is_field_name=False):
     yield _symbol_token_end(c, ctx, is_field_name)
 
 
+class _IVMToken(SymbolToken):
+    """Subclass of :class:`SymbolToken`, which indicates that this token's text matches the IVM pattern."""
+    def ivm_event(self):
+        """If this token's text is a supported IVM, returns the :class:`IonEvent` representing that IVM.
+        Otherwise, returns `None`.
+        """
+        try:
+            return _IVM_EVENTS[self.text]
+        except KeyError:
+            return None
+
+    def regular_token(self):
+        """Returns a copy of this token as a normal :class:`SymbolToken`.
+
+        This will be used in _as_symbol when this token is used as an annotation or field name, in which cases it
+        can no longer be an IVM.
+        """
+        return SymbolToken(self.text, self.sid, self.location)
+
+
 @coroutine
 def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
     """Handles symbol tokens that begin with a dollar sign. These may end up being system symbols ($ion_*), symbol
@@ -1428,7 +1454,7 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
     prev = c
     c, self = yield
     trans = ctx.immediate_transition(self)
-    maybe_ivm = ctx.depth == 0 and not is_field_name
+    maybe_ivm = ctx.depth == 0 and not is_field_name and not ctx.annotations
     complete_ivm = False
     maybe_symbol_identifier = True
     match_index = 1
@@ -1467,11 +1493,7 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
         sid = int(val[1:])
         val = SymbolToken(None, sid)
     elif complete_ivm:
-        try:
-            ivm_token = _IVM_TOKENS[val.as_text()]
-        except KeyError:
-            _illegal_character(c, ctx, 'Illegal IVM: %s.' % (val,))
-        val = ivm_token
+        val = _IVMToken(*val.as_symbol())
     yield _symbol_token_end(c, ctx, is_field_name, value=val)
 
 

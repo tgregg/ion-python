@@ -419,6 +419,8 @@ _GOOD = (
     (b'$ion_a_b 42 ', e_symbol(_st(u'$ion_a_b')), e_int(42)),
     (b'$ion_1_b 42 ', e_symbol(_st(u'$ion_1_b')), e_int(42)),
     (b'ann::$ion_1_0 42 ', e_symbol(_st(u'$ion_1_0'), annotations=(_st(u'ann'),)), e_int(42)),
+    (b'$ion_1234_1::$ion_1_0 42 ', e_symbol(_st(u'$ion_1_0'), annotations=(_st(u'$ion_1234_1'),)), e_int(42)),
+    (b'$ion_1_0::$ion_1234_1 42 ', e_symbol(_st(u'$ion_1234_1'), annotations=(_st(u'$ion_1_0'),)), e_int(42)),
     (b'{$ion_1_0:abc}',) + _good_struct(e_symbol(_st(u'abc'), field_name=_st(u'$ion_1_0'))),
     (b'($ion_1_0)',) + _good_sexp(e_symbol(_st(u'$ion_1_0'))),
     (b'42[]', e_int(42)) + _good_list(),
