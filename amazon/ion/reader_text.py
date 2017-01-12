@@ -148,6 +148,8 @@ _UNICODE_ESCAPE_2 = _ord(b'x')
 _UNICODE_ESCAPE_4 = _ord(b'u')
 _UNICODE_ESCAPE_8 = _ord(b'U')
 
+_ESCAPED_NEWLINE = u''  # An escaped newline expands to nothing.
+
 _MAX_TEXT_CHAR = 0x10ffff
 _MAX_CLOB_CHAR = 0x7e
 _MIN_QUOTED_CHAR = 0x20
@@ -1094,6 +1096,16 @@ def _validate_quoted_text(allowed_whitespace, c, ctx, max_char):
 _validate_long_string_text = partial(_validate_quoted_text, _WHITESPACE)
 
 
+def _is_escaped_newline(c):
+    if not (c in _NEWLINES and _is_escaped(c)):
+        return False
+    try:
+        return c.char == _ESCAPED_NEWLINE
+    except AttributeError:
+        return False
+    #return c in _NEWLINES and _is_escaped(c) and _chr(c) == u''
+
+
 @coroutine
 def _long_string_handler(c, ctx, is_field_name=False):
     """Handles triple-quoted strings. Remains active until a value other than a long string is encountered."""
@@ -1127,7 +1139,8 @@ def _long_string_handler(c, ctx, is_field_name=False):
                 _validate_long_string_text(c, ctx, max_char)
                 # Any quotes found in the meantime are part of the data
                 val.extend(_SINGLE_QUOTES[quotes])
-                val.append(c)
+                if not _is_escaped_newline(c):
+                    val.append(c)
                 quotes = 0
             else:
                 if quotes > 0:
@@ -1524,12 +1537,16 @@ def _quoted_text_handler_factory(delimiter, assertion, before, after, append_fir
     @coroutine
     def quoted_text_handler(c, ctx, is_field_name=False):
         assert assertion(c)
+
+        def append():
+            if not _is_escaped_newline(c):
+                val.append(c)
         is_clob = ctx.ion_type is IonType.CLOB
         max_char = _MAX_CLOB_CHAR if is_clob else _MAX_TEXT_CHAR
         ctx.set_unicode(quoted_text=True)
         val, event_on_close = before(c, ctx, is_field_name, is_clob)
         if append_first:
-            val.append(c)
+            append()
         c, self = yield
         trans = ctx.immediate_transition(self)
         done = False
@@ -1542,7 +1559,7 @@ def _quoted_text_handler_factory(delimiter, assertion, before, after, append_fir
                     break
             else:
                 _validate_short_quoted_text(c, ctx, max_char)
-                val.append(c)
+                append()
             c, _ = yield trans
         yield after(c, ctx, is_field_name)
     return quoted_text_handler
@@ -2162,6 +2179,7 @@ def _next_code_point_handler(whence, ctx):
     data_event, self = yield
     queue = ctx.queue
     unicode_escapes_allowed = ctx.ion_type is not IonType.CLOB
+    escaped_newline = False
     while True:
         if len(queue) == 0:
             yield ctx.read_data_event(self)
@@ -2171,7 +2189,6 @@ def _next_code_point_handler(whence, ctx):
         if code_point == _BACKSLASH:
             escape_sequence = b'' + six.int2byte(_BACKSLASH)
             num_digits = None
-            escaped_newline = False
             while True:
                 if len(queue) == 0:
                     yield ctx.read_data_event(self)
@@ -2190,12 +2207,6 @@ def _next_code_point_handler(whence, ctx):
                         break
                     elif code_point in _NEWLINES:
                         escaped_newline = True
-                        if code_point == _CARRIAGE_RETURN:
-                            if len(queue) == 0:
-                                yield ctx.read_data_event(self)
-                            code_point = next(queue_iter)
-                            if code_point != _NEWLINE:
-                                queue.unread(code_point)
                         break
                     else:
                         # This is a backslash followed by an invalid escape character. This is illegal.
@@ -2208,17 +2219,16 @@ def _next_code_point_handler(whence, ctx):
                     escape_sequence += six.int2byte(code_point)
                     if len(escape_sequence) == num_digits:
                         break
-            if escaped_newline:
-                continue
-            escape_sequence = escape_sequence.decode('unicode-escape')
-            cp_iter = unicode_iter(escape_sequence)
-            code_point = CodePoint(next(cp_iter))
-            code_point.char = escape_sequence
-            code_point.is_escaped = True
-            ctx.set_code_point(code_point)
-            yield Transition(None, whence)
-        elif code_point == _CARRIAGE_RETURN:
-            # Normalize all unescaped verbatim newlines (\r, \n, and \r\n) to \n .
+            if not escaped_newline:
+                escape_sequence = escape_sequence.decode('unicode-escape')
+                cp_iter = unicode_iter(escape_sequence)
+                code_point = CodePoint(next(cp_iter))
+                code_point.char = escape_sequence
+                code_point.is_escaped = True
+                ctx.set_code_point(code_point)
+                yield Transition(None, whence)
+        if code_point == _CARRIAGE_RETURN:
+            # Normalize all newlines (\r, \n, and \r\n) to \n .
             if len(queue) == 0:
                 yield ctx.read_data_event(self)
             code_point = next(queue_iter)
@@ -2228,6 +2238,10 @@ def _next_code_point_handler(whence, ctx):
         while code_point is None:
             yield ctx.read_data_event(self)
             code_point = next(code_point_generator)
+        if escaped_newline:
+            code_point = CodePoint(code_point)
+            code_point.char = _ESCAPED_NEWLINE
+            code_point.is_escaped = True
         ctx.set_code_point(code_point)
         yield Transition(None, whence)
 
