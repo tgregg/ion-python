@@ -43,6 +43,9 @@ def _sid(sid):
     return SymbolToken(text=None, sid=sid, location=None)
 
 _BAD_GRAMMAR = (
+    (b'$ion_1_1 42',),
+    (b'$ion_10_1 42',),
+    (b'$ion_1_02 42',),
     (b'+1',),
     (b'01',),
     (b'1.23.4',),
@@ -341,6 +344,7 @@ _GOOD_FLUSH = (
 )
 
 _BAD_FLUSH = (
+    [(e_read(b'$ion_1_1'), INC), _NEXT_ERROR],
     [(e_read(b'123_'), INC), _NEXT_ERROR],
     [(e_read(b'123e'), INC), _NEXT_ERROR],
     [(e_read(b'123e-'), INC), _NEXT_ERROR],
@@ -409,9 +413,11 @@ _good_list = partial(_good_container, e_start_list, e_end_list)
 
 _GOOD = (
     (b'$ion_1_0 42 ', IVM, e_int(42)),
+    (b'$ion_1_0_ 42 ', e_symbol(_st(u'$ion_1_0_')), e_int(42)),
+    (b'$ion_1_0a 42 ', e_symbol(_st(u'$ion_1_0a')), e_int(42)),
     (b'$ion_1_ 42 ', e_symbol(_st(u'$ion_1_')), e_int(42)),
-    (b'$ion_1_1 42 ', e_symbol(_st(u'$ion_1_1')), e_int(42)),
-    (b'$ion_1_02 42 ', e_symbol(_st(u'$ion_1_02')), e_int(42)),
+    (b'$ion_a_b 42 ', e_symbol(_st(u'$ion_a_b')), e_int(42)),
+    (b'$ion_1_b 42 ', e_symbol(_st(u'$ion_1_b')), e_int(42)),
     (b'ann::$ion_1_0 42 ', e_symbol(_st(u'$ion_1_0'), annotations=(_st(u'ann'),)), e_int(42)),
     (b'{$ion_1_0:abc}',) + _good_struct(e_symbol(_st(u'abc'), field_name=_st(u'$ion_1_0'))),
     (b'($ion_1_0)',) + _good_sexp(e_symbol(_st(u'$ion_1_0'))),

@@ -155,9 +155,28 @@ _TRUE_SUFFIX = _seq(b'rue')
 _FALSE_SUFFIX = _seq(b'alse')
 _NAN_SUFFIX = _seq(b'an')
 _INF_SUFFIX = _seq(b'inf')
-_IVM_SUFFIX = _seq(TEXT_ION_1_0.encode(_ENCODING))
+_IVM_PREFIX = _seq(b'$ion_')
 
-_IVM_TOKEN = SymbolToken(TEXT_ION_1_0, sid=None)
+_ION_1_0_TOKEN = SymbolToken(TEXT_ION_1_0, sid=None)
+_IVM_TOKENS = {
+    TEXT_ION_1_0: _ION_1_0_TOKEN,
+}
+_IVM_EVENTS = {
+    TEXT_ION_1_0: ION_VERSION_MARKER_EVENT,
+}
+
+
+def _is_ivm(token):
+    """Tests whether the given :class:`SymbolToken` represents an IVM.
+
+    This tests reference equality with the values of _IVM_TOKEN to enforce the distinction between true IVMs and non-IVM
+    SymbolTokens with text that looks like an IVM.
+    """
+    for ivm_token in six.itervalues(_IVM_TOKENS):
+        if token is ivm_token:
+            return True
+    return False
+
 
 _POS_INF = float('+inf')
 _NEG_INF = float('-inf')
@@ -325,8 +344,8 @@ class _HandlerContext():
         depth = self.depth
         whence = self.whence
 
-        if ion_type is IonType.SYMBOL and value is _IVM_TOKEN and not annotations and depth == 0:
-            return Transition(ION_VERSION_MARKER_EVENT, whence)
+        if ion_type is IonType.SYMBOL and not annotations and depth == 0 and _is_ivm(value):
+            return Transition(_IVM_EVENTS[value.text], whence)
 
         return Transition(
             event_cls(event_type, ion_type, value, self.field_name, annotations, depth),
@@ -1410,24 +1429,34 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
     c, self = yield
     trans = ctx.immediate_transition(self)
     maybe_ivm = ctx.depth == 0 and not is_field_name
+    complete_ivm = False
     maybe_symbol_identifier = True
     match_index = 1
+    ivm_post_underscore = False
     while True:
         if c not in _WHITESPACE:
             if prev in _WHITESPACE or _ends_value(c) or c == _COLON or (in_sexp and c in _OPERATORS):
                 break
             maybe_symbol_identifier = maybe_symbol_identifier and c in _DIGITS
             if maybe_ivm:
-                if match_index < len(_IVM_SUFFIX):
-                    maybe_ivm = c == _IVM_SUFFIX[match_index]
+                if match_index == len(_IVM_PREFIX):
+                    if c in _DIGITS:
+                        if ivm_post_underscore:
+                            complete_ivm = True
+                    elif c == _UNDERSCORE and not ivm_post_underscore:
+                        ivm_post_underscore = True
+                    else:
+                        maybe_ivm = False
+                        complete_ivm = False
                 else:
-                    maybe_ivm = False
+                    maybe_ivm = c == _IVM_PREFIX[match_index]
             if maybe_ivm:
-                match_index += 1
+                if match_index < len(_IVM_PREFIX):
+                    match_index += 1
             elif not maybe_symbol_identifier:
                 yield ctx.immediate_transition(_unquoted_symbol_handler(c, ctx, is_field_name))
             val.append(c)
-        elif match_index < len(_IVM_SUFFIX):
+        elif match_index < len(_IVM_PREFIX):
             maybe_ivm = False
         prev = c
         c, _ = yield trans
@@ -1437,8 +1466,12 @@ def _symbol_identifier_or_unquoted_symbol_handler(c, ctx, is_field_name=False):
         assert not maybe_ivm
         sid = int(val[1:])
         val = SymbolToken(None, sid)
-    elif maybe_ivm:
-        val = _IVM_TOKEN
+    elif complete_ivm:
+        try:
+            ivm_token = _IVM_TOKENS[val.as_text()]
+        except KeyError:
+            _illegal_character(c, ctx, 'Illegal IVM: %s.' % (val,))
+        val = ivm_token
     yield _symbol_token_end(c, ctx, is_field_name, value=val)
 
 
