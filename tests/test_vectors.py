@@ -84,7 +84,6 @@ _SKIP_LIST = (
     _abspath_equivs(u'structsFieldsRepeatedNames.ion'),
     _abspath_nonequivs(u'structs.ion'),
 
-    _abspath_equivs(u'strings.ion'),  # TODO Fix bug which errors on four single quotes followed by escaped newline followed by three single quotes. The escaped newline should create a boundary that makes the fourth quote part of the data.
     _abspath_equivs_utf8(u'stringUtf8.ion'),  # TODO some error in parsing the file around unpaired unicode surrogates. Investigate.
     _abspath_equivs_utf8(u'stringU0001D11E.ion'),
     _abspath_equivs_utf8(u'stringU0120.ion'),
