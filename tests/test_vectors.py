@@ -80,18 +80,17 @@ def _open(file):
 
 _SKIP_LIST = (
     # TEXT:
-    _abspath_good(u'subfieldVarUInt.ion'),  # TODO investigate. See also: https://github.com/amznlabs/ion-java/issues/62
-    _abspath_good(u'subfieldVarUInt32bit.ion'),  # TODO investigate. See also: https://github.com/amznlabs/ion-java/issues/62
+    # TODO these contain extremely large symbol ID values which cause the parser to hang. ion-java seems to have a
+    # similar problem (see: https://github.com/amznlabs/ion-java/issues/62 ).
+    _abspath_good(u'subfieldVarUInt.ion'),
+    _abspath_good(u'subfieldVarUInt32bit.ion'),
     # TODO the following contain invalid max ID values. The spec says to interpret these as undefined max IDs.
-    # This implementation raises errors, while java apparently doesn't.
+    # As such, these should succeed if there is an exact match to a shared symbol table in the catalog, and fail
+    # otherwise. These should be duplicated in good/ and bad/ and tested under both conditions (probably with shared
+    # symbol tables persisted within the ion-tests repo), respectively.
     _abspath_good(u'localSymbolTableImportNegativeMaxId.ion'),
     _abspath_good(u'localSymbolTableImportNonIntegerMaxId.ion'),
     _abspath_good(u'localSymbolTableImportNullMaxId.ion'),
-    # TODO the following contain symbol identifiers without a corresponding mapping. The spec says these should be
-    # errors (as they are in this implementation).
-    # _abspath_good(u'notVersionMarkers.ion'),
-    # _abspath_good(u'symbols.ion'),
-    # _abspath_nonequivs(u'annotations.ion'),
     # TODO The following contains timestamps that aren't equal to each other according to the spec
     # (different precisions). This should probably be split up and moved. Java handles this by defining a different
     # equivalence for this file which compares the timestamps after converting them to millis. Why is this needed?
