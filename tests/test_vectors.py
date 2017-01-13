@@ -18,7 +18,7 @@ from __future__ import division
 from __future__ import print_function
 
 from functools import partial
-from io import BytesIO
+from io import open
 from itertools import chain
 from os import listdir
 from os.path import isfile, join, abspath
@@ -53,6 +53,14 @@ def _abspath(*subdirectories):
 def _abspath_file(subdirectories, f):
     return _abspath(*(subdirectories + (f,)))
 
+
+def _open(file):
+    is_binary = file[-3:] == u'10n'
+    if is_binary:
+        return open(file, 'rb')
+    else:
+        return open(file, mode='r', encoding='utf-8')
+
 _abspath_good = partial(_abspath_file, _GOOD_SUBDIR)
 _abspath_bad = partial(_abspath_file, _BAD_SUBDIR)
 _abspath_equivs = partial(_abspath_file, _GOOD_SUBDIR + _EQUIVS_SUBDIR)
@@ -83,11 +91,6 @@ _SKIP_LIST = (
     # TODO the following contain structs with repeated field names. Simpleion maps these to dicts, whose keys are de-duped.
     _abspath_equivs(u'structsFieldsRepeatedNames.ion'),
     _abspath_nonequivs(u'structs.ion'),
-
-    _abspath_equivs_utf8(u'stringUtf8.ion'),  # TODO some error in parsing the file around unpaired unicode surrogates. Investigate.
-    _abspath_equivs_utf8(u'stringU0001D11E.ion'),
-    _abspath_equivs_utf8(u'stringU0120.ion'),
-    _abspath_equivs_utf8(u'stringU2021.ion'),
 
     # BINARY:
     _abspath_good(u'nullInt3.10n'),  # TODO the binary reader needs to support the 0x3F type code (null int (negative))
@@ -152,11 +155,11 @@ def _list_files(*subdirectories):
 def _load_thunk(file, is_bad):
 
     def good():
-        vector = open(file, 'rb')
+        vector = _open(file)
         load(vector, single_value=False)
 
     def bad():
-        vector = open(file, 'rb')
+        vector = _open(file)
         with raises((IonException, ValueError, TypeError)):
             load(vector, single_value=False)
 
@@ -206,7 +209,7 @@ def _nonequivs_params(file, ion_sequence):
 def _good_comparisons(vector_type, *subdirectories):
     params = _equivs_params if vector_type.is_equivs else _nonequivs_params
     for file in _list_files(*(_GOOD_SUBDIR + subdirectories)):
-        vector = open(file, 'rb')
+        vector = _open(file)
         sequences = load(vector, single_value=False)
         for sequence in sequences:
             for param in params(file, sequence):
