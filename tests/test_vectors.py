@@ -17,6 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from collections import defaultdict
 from functools import partial
 from io import open
 from itertools import chain
@@ -53,14 +54,6 @@ def _abspath(*subdirectories):
 def _abspath_file(subdirectories, f):
     return _abspath(*(subdirectories + (f,)))
 
-
-def _open(file):
-    is_binary = file[-3:] == u'10n'
-    if is_binary:
-        return open(file, 'rb')
-    else:
-        return open(file, mode='r', encoding='utf-8')
-
 _abspath_good = partial(_abspath_file, _GOOD_SUBDIR)
 _abspath_bad = partial(_abspath_file, _BAD_SUBDIR)
 _abspath_equivs = partial(_abspath_file, _GOOD_SUBDIR + _EQUIVS_SUBDIR)
@@ -68,12 +61,27 @@ _abspath_equivs_utf8 = partial(_abspath_file, _GOOD_SUBDIR + _EQUIVS_SUBDIR + _U
 _abspath_nonequivs = partial(_abspath_file, _GOOD_SUBDIR + _NONEQUIVS_SUBDIR)
 _abspath_equiv_timeline = partial(_abspath_file, _GOOD_SUBDIR + _TIMESTAMP_SUBDIR + _TIMELINE_SUBDIR)
 
+
+_ENCODING_UTF8 = 'utf-8'
+_ENCODING_UTF16_BE = 'utf-16-be'
+_ENCODING_UTF32_BE = 'utf-32-be'
+
+_FILE_ENCODINGS = defaultdict(lambda: _ENCODING_UTF8)
+_FILE_ENCODINGS[_abspath_good(u'utf16.ion')] = _ENCODING_UTF16_BE
+_FILE_ENCODINGS[_abspath_good(u'utf32.ion')] = _ENCODING_UTF32_BE
+
+
+def _open(file):
+    is_binary = file[-3:] == u'10n'
+    if is_binary:
+        return open(file, 'rb')
+    else:
+        return open(file, mode='r', encoding=_FILE_ENCODINGS[file])
+
 _SKIP_LIST = (
     # TEXT:
     _abspath_good(u'subfieldVarUInt.ion'),  # TODO investigate. See also: https://github.com/amznlabs/ion-java/issues/62
     _abspath_good(u'subfieldVarUInt32bit.ion'),  # TODO investigate. See also: https://github.com/amznlabs/ion-java/issues/62
-    _abspath_good(u'utf16.ion'),  # TODO see https://github.com/amznlabs/ion-java/issues/61
-    _abspath_good(u'utf32.ion'),  # TODO see https://github.com/amznlabs/ion-java/issues/61
     # TODO the following contain invalid max ID values. The spec says to interpret these as undefined max IDs.
     # This implementation raises errors, while java apparently doesn't.
     _abspath_good(u'localSymbolTableImportNegativeMaxId.ion'),
