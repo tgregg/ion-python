@@ -104,6 +104,7 @@ _BAD_GRAMMAR = (
     (b"'''a\b'''",),
     (b'"\\udbff\\""',),  # Unpaired escaped surrogate.
     (b'"\\udbffabcdef',),  # Unpaired escaped surrogate.
+    (b"'''\\udbff'''",),  # Splitting surrogate escapes across long string literal boundaries is illegal per the spec.
     (b'abc://',),
     (b'abc/**/://',),
     (b'{{/**/}}',),
