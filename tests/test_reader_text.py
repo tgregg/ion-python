@@ -102,6 +102,8 @@ _BAD_GRAMMAR = (
     (b"'\0'",),
     (b"'''\b'''",),
     (b"'''a\b'''",),
+    (b'"\\udbff\\""',),  # Unpaired escaped surrogate.
+    (b'"\\udbffabcdef',),  # Unpaired escaped surrogate.
     (b'abc://',),
     (b'abc/**/://',),
     (b'{{/**/}}',),
@@ -205,6 +207,8 @@ _BAD_VALUE = (
     (b'2000-01-01T00:00:00.9999999Z',),  # Only up to microsecond-level precision is supported.
     (b'2000-01-01T00:00:00.000+24:00',),  # Hour offset is 0..23.
     (b'2000-01-01T00:00:00.000+00:60',),  # Minute offset is 0..59.
+    (b'"\\udbff\\u3000"',),  # Malformed surrogate pair (\u3000 is not a low surrogate).
+    (b'"\\u3000\\udfff"',),  # Malformed surrogate pair (\u3000 is not a high surrogate).
 )
 
 _INCOMPLETE = (
@@ -514,6 +518,7 @@ _GOOD_ESCAPES_FROM_UNICODE = (
     (u"'''\\b'''42 ", e_string(u'\b'), e_int(42)),
     (u"'''a\\b'''42 ", e_string(u'a\b'), e_int(42)),
     (u'"\\u3000"', e_string(u'\u3000')),
+    (u'"\\udbff\\udfff"', e_string(u'\U0010ffff')),  # Escaped surrogate pair.
     (u'["\\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
     (u'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(_st(u'\'')), e_string(u'\v')),
     (u'(\'\\/\')',) + _good_sexp(e_symbol(_st(u'/'))),
@@ -551,6 +556,7 @@ _GOOD_ESCAPES_FROM_BYTES = (
     (br"'''\b'''42 ", e_string(u'\b'), e_int(42)),
     (br"'''a\b'''42 ", e_string(u'a\b'), e_int(42)),
     (br'"\u3000"', e_string(u'\u3000')),
+    (br'"\udbff\udfff"', e_string(u'\U0010ffff')),  # Escaped surrogate pair.
     (br'["\U0001F4a9"]',) + _good_list(e_string(u'\U0001f4a9')),
     (b'"\\t "\'\\\'\'"\\v"', e_string(u'\t '), e_symbol(_st(u'\'')), e_string(u'\v')),
     (b'(\'\\/\')',) + _good_sexp(e_symbol(_st(u'/'))),

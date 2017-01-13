@@ -2180,6 +2180,8 @@ def _next_code_point_handler(whence, ctx):
     queue = ctx.queue
     unicode_escapes_allowed = ctx.ion_type is not IonType.CLOB
     escaped_newline = False
+    escape_sequence = b''
+    low_surrogate_required = False
     while True:
         if len(queue) == 0:
             yield ctx.read_data_event(self)
@@ -2187,17 +2189,22 @@ def _next_code_point_handler(whence, ctx):
         code_point_generator = _next_code_point_iter(queue, queue_iter)
         code_point = next(code_point_generator)
         if code_point == _BACKSLASH:
-            escape_sequence = b'' + six.int2byte(_BACKSLASH)
+            escape_sequence += six.int2byte(_BACKSLASH)
             num_digits = None
             while True:
                 if len(queue) == 0:
                     yield ctx.read_data_event(self)
                 code_point = next(queue_iter)
                 if six.indexbytes(escape_sequence, -1) == _BACKSLASH:
-                    if code_point == _ord(b'x'):
+                    if code_point == _ord(b'u') and unicode_escapes_allowed:
+                        # 4-digit unicode escapes, plus '\u' for each surrogate
+                        num_digits = 12 if low_surrogate_required else 6
+                        low_surrogate_required = False
+                    elif low_surrogate_required:
+                        _illegal_character(code_point, ctx,
+                                           'Unpaired high surrogate escape sequence %s.' % (escape_sequence,))
+                    elif code_point == _ord(b'x'):
                         num_digits = 4  # 2-digit hex escapes
-                    elif code_point == _ord(b'u') and unicode_escapes_allowed:
-                        num_digits = 6  # 4-digit unicode escapes
                     elif code_point == _ord(b'U') and unicode_escapes_allowed:
                         num_digits = 10  # 8-digit unicode escapes
                     elif code_point in _COMMON_ESCAPES:
@@ -2220,13 +2227,20 @@ def _next_code_point_handler(whence, ctx):
                     if len(escape_sequence) == num_digits:
                         break
             if not escaped_newline:
-                escape_sequence = escape_sequence.decode('unicode-escape')
-                cp_iter = unicode_iter(escape_sequence)
-                code_point = CodePoint(next(cp_iter))
-                code_point.char = escape_sequence
+                decoded_escape_sequence = escape_sequence.decode('unicode-escape')
+                cp_iter = _next_code_point_iter(decoded_escape_sequence, iter(decoded_escape_sequence), to_int=ord)
+                code_point = next(cp_iter)
+                if code_point is None:
+                    # This is a high surrogate. Restart the loop to gather the low surrogate.
+                    low_surrogate_required = True
+                    continue
+                code_point = CodePoint(code_point)
+                code_point.char = decoded_escape_sequence
                 code_point.is_escaped = True
                 ctx.set_code_point(code_point)
                 yield Transition(None, whence)
+        elif low_surrogate_required:
+            _illegal_character(code_point, ctx, 'Unpaired high surrogate escape sequence %s.' % (escape_sequence,))
         if code_point == _CARRIAGE_RETURN:
             # Normalize all newlines (\r, \n, and \r\n) to \n .
             if len(queue) == 0:
