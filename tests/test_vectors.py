@@ -84,33 +84,25 @@ _SKIP_LIST = (
     # similar problem (see: https://github.com/amznlabs/ion-java/issues/62 ).
     _abspath_good(u'subfieldVarUInt.ion'),
     _abspath_good(u'subfieldVarUInt32bit.ion'),
-    # TODO the following contain invalid max ID values. The spec says to interpret these as undefined max IDs.
-    # As such, these should succeed if there is an exact match to a shared symbol table in the catalog, and fail
-    # otherwise. These should be duplicated in good/ and bad/ and tested under both conditions (probably with shared
-    # symbol tables persisted within the ion-tests repo), respectively.
-    _abspath_good(u'localSymbolTableImportNegativeMaxId.ion'),
-    _abspath_good(u'localSymbolTableImportNonIntegerMaxId.ion'),
-    _abspath_good(u'localSymbolTableImportNullMaxId.ion'),
+    # The following contains timestamps with more than 6 digits of fractional precision; not currently supported in
+    # this implementation because Python's datetime only supports microsecond precision. Current logic raises an error
+    # instead of silently rounding/truncating.
+    _abspath_equivs(u'timestampsLargeFractionalPrecision.ion'),
     # TODO The following contains timestamps that aren't equal to each other according to the spec
     # (different precisions). This should probably be split up and moved. Java handles this by defining a different
     # equivalence for this file which compares the timestamps after converting them to millis. Why is this needed?
     _abspath_equiv_timeline(u'timestamps.ion'),
-    # TODO the following contain structs with repeated field names. Simpleion maps these to dicts, whose keys are de-duped.
+    # TODO the following contain structs with repeated field names. Simpleion maps these to dicts, whose keys are
+    # de-duped. Need an implementation that maintains the duplicate mappings when iterated.
     _abspath_equivs(u'structsFieldsRepeatedNames.ion'),
     _abspath_nonequivs(u'structs.ion'),
 
     # BINARY:
-    _abspath_good(u'nullInt3.10n'),  # TODO the binary reader needs to support the 0x3F type code (null int (negative))
     _abspath_good(u'structAnnotatedOrdered.10n'),  # TODO investigate.
     _abspath_good(u'structOrdered.10n'),  # TODO investigate.
-    _abspath_bad(u'minLongWithLenTooSmall.10n'),  # TODO this is no longer "bad" because NOP padding is now allowed.
-    _abspath_bad(u'nullBadTD.10n'),  # TODO this is no longer "bad" because NOP padding is now allowed. This should be renamed "NOPPad.10n" and moved to "good".
     # TODO the following contain inaccurate annot_length subfields, which pass in weird ways. Needs to be fixed.
     _abspath_bad(u'container_length_mismatch.10n'),
     _abspath_bad(u'emptyAnnotatedInt.10n'),
-    # TODO the last element of the following contains a timestamp with a negative fractional. This is illegal per spec.
-    # It should be removed from here and put in its own test under bad/ .
-    _abspath_equivs(u'timestampFractions.10n'),
 )
 
 _DEBUG_WHITELIST = (
